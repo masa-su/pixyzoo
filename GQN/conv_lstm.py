@@ -2,12 +2,12 @@ import torch
 from torch import nn
 
 class Conv2dLSTMCell(nn.Module):
-    def __init__(self, in_channels, out_channels, hidden_channels, kernel_size=3, stride=1, padding=1):
+    def __init__(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
         super(Conv2dLSTMCell, self).__init__()
 
         kwargs = dict(kernel_size=kernel_size, stride=stride, padding=padding)
         
-        in_channels += hidden_channels
+        in_channels += out_channels
         
         self.forget = nn.Conv2d(in_channels, out_channels, **kwargs)
         self.input  = nn.Conv2d(in_channels, out_channels, **kwargs)

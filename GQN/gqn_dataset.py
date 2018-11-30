@@ -1,7 +1,7 @@
 import collections, os, io
 from PIL import Image
 import torch
-from torchvision.transforms import ToTensor
+from torchvision.transforms import ToTensor, Resize
 from torch.utils.data import Dataset
 
 Context = collections.namedtuple('Context', ['frames', 'cameras'])
@@ -32,7 +32,8 @@ class GQNDataset(Dataset):
         scene_path = os.path.join(self.root_dir, "{}.pt".format(idx))
         data = torch.load(scene_path)
 
-        byte_to_tensor = lambda x: ToTensor()(Image.open(io.BytesIO(x)))
+        byte_to_tensor = lambda x: ToTensor()(Resize(64)((Image.open(io.BytesIO(x)))))
+
 
         images = torch.stack([byte_to_tensor(frame) for frame in data.frames])
 
