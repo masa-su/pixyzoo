@@ -11,6 +11,7 @@ This repository contains various deep generative models implemented in [Pixyz](h
 - [ ] IntroVAE
 - [ ] beta-VAE
 - [ ] TD-VAE
+- [ ] Variational Information Bottleneck
 - [ ] WGAN
 
 
