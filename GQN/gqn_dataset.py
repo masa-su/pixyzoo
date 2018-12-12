@@ -8,7 +8,6 @@ import random
 Context = collections.namedtuple('Context', ['frames', 'cameras'])
 Scene = collections.namedtuple('Scene', ['frames', 'cameras'])
 
-
 def transform_viewpoint(v):
     w, z = torch.split(v, 3, dim=-1)
     y, p = torch.split(z, 1, dim=-1)
@@ -18,7 +17,6 @@ def transform_viewpoint(v):
     v_hat = torch.cat(view_vector, dim=-1)
 
     return v_hat
-
 
 class GQNDataset(Dataset):
     def __init__(self, root_dir, transform=None, target_transform=None):

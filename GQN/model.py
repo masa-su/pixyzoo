@@ -1,10 +1,7 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-
 from pixyz.distributions import Normal
-from pixyz.losses import NLL, KullbackLeibler
-
 from representation import Pyramid, Tower, Pool
 from inference import InferenceCore, Inference
 from generation import GenerationCore, Prior, Generation
