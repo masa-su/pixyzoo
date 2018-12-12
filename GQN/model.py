@@ -5,184 +5,187 @@ from torch.nn import functional as F
 from pixyz.distributions import Normal
 from pixyz.losses import NLL, KullbackLeibler
 
-from conv_lstm import Conv2dLSTMCell
-from representation import Representation
-
-
-# cores
-class GeneratorCore(nn.Module):
-    def __init__(self, v_dim, r_dim, z_dim, h_dim, SCALE):
-        super(GeneratorCore, self).__init__()
-        self.core = Conv2dLSTMCell(v_dim + r_dim + z_dim, h_dim, kernel_size=5, stride=1, padding=2)
-        self.upsample = nn.ConvTranspose2d(h_dim, h_dim, kernel_size=SCALE, stride=SCALE, padding=0)
-        
-    def forward(self, z, v, r, h_g, c_g, u):
-        h_g, c_g =  self.core(torch.cat([z, v, r], dim=1), [h_g, c_g])
-        u = self.upsample(h_g) + u
-        return h_g, c_g, u
-
-
-class InferenceCore(nn.Module):
-    def __init__(self, x_dim, v_dim, r_dim, h_dim):
-        super(InferenceCore, self).__init__()
-        self.core = Conv2dLSTMCell(2*h_dim + x_dim + v_dim + r_dim, h_dim, kernel_size=5, stride=1, padding=2)
-        
-    def forward(self, x, v, r, h_g, h_e, c_e, u):
-        h_e, c_e = self.core(torch.cat([h_g, u, x, v, r], dim=1), [h_e, c_e])
-        return h_e, c_e
-
-# distributions
-class Generator(Normal):
-    def __init__(self, x_dim, h_dim):
-        super(Generator, self).__init__(cond_var=["u", "sigma"],var=["x_q"])
-        self.eta_g = nn.Conv2d(h_dim, x_dim, kernel_size=1, stride=1, padding=0)
-        
-    def forward(self, u, sigma):
-        mu = self.eta_g(u)
-        return {"loc":mu, "scale":sigma}
-
-class Prior(Normal):
-    def __init__(self, z_dim, h_dim):
-        super(Prior, self).__init__(cond_var=["h_g"],var=["z"])
-        self.z_dim = z_dim
-        self.eta_pi = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
-
-    def forward(self, h_g):
-        mu, logvar = torch.split(self.eta_pi(h_g), self.z_dim, dim=1)
-        std = F.softplus(logvar)
-        return {"loc":mu ,"scale":std}
-    
-class Inference(Normal):
-    def __init__(self, z_dim, h_dim):
-        super(Inference, self).__init__(cond_var=["h_i"],var=["z"])
-        self.z_dim = z_dim
-        self.eta_e = nn.Conv2d(h_dim, 2*z_dim, kernel_size=5, stride=1, padding=2)
-        
-    def forward(self, h_i):
-        mu, logvar = torch.split(self.eta_e(h_i), self.z_dim, dim=1)
-        std = F.softplus(logvar)
-        return {"loc":mu, "scale":std}
+from representation import Pyramid, Tower, Pool
+from inference import InferenceCore, Inference
+from generation import GenerationCore, Prior, Generation
     
 class GQN(nn.Module):
-    def __init__(self, x_dim, v_dim, r_dim, h_dim, z_dim, L, SCALE):
+    def __init__(self, representation="pool", L=12, shared_core=False):
         super(GQN, self).__init__()
+        
+        # Number of generative layers
         self.L = L
-        self.h_dim = h_dim
-        self.SCALE = SCALE
-
-        self.phi = Representation(x_dim, v_dim, r_dim)
-        self.generator_core = GeneratorCore(v_dim, r_dim, z_dim, h_dim, self.SCALE)
-        self.inference_core = InferenceCore(x_dim, v_dim, r_dim, h_dim)
-
-        self.upsample   = nn.ConvTranspose2d(h_dim, h_dim, kernel_size=SCALE, stride=SCALE, padding=0)
-        self.downsample_x = nn.Conv2d(x_dim, x_dim, kernel_size=SCALE, stride=SCALE, padding=0)
-        self.downsample_u = nn.Conv2d(h_dim, h_dim, kernel_size=SCALE, stride=SCALE, padding=0)
-
-        # distribution
-        self.pi = Prior(z_dim, h_dim)
-        self.q = Inference(z_dim, h_dim)
-        self.g = Generator(x_dim, h_dim)
-
-    def forward(self, x, v, v_q, x_q, sigma):
-        batch_size, n_views, _, h, w = x.size()
         
-        # Merge batch and view dimensions.
-        _, _, *x_dims = x.size()
-        _, _, *v_dims = v.size()
-
-        x = x.view((-1, *x_dims))
-        v = v.view((-1, *v_dims))
-
-        # representation generated from input images
-        # and corresponding viewpoints
-        r = self.phi(x, v)
-
-        # Seperate batch and view dimensions
-        _, *r_dims = r.size()
-        r = r.view((batch_size, n_views, *r_dims))
-
-        # sum over view representations
-        r = torch.sum(r, dim=1)
-
-        _, _, h, w = x.size()
-
-        # Increase dimensions
-        v_q = v_q.view(batch_size, -1, 1, 1).repeat(1, 1, h//self.SCALE, w//self.SCALE)
+        self.shared_core = shared_core
         
-        if r.size(2) != h//self.SCALE:
-            r = r.repeat(1, 1, h//self.SCALE, w//self.SCALE)
-
-        # Reset hidden state
-        hidden_g = x_q.new_zeros((batch_size, self.h_dim, h//self.SCALE, w//self.SCALE))
-        hidden_i = x_q.new_zeros((batch_size, self.h_dim, h//self.SCALE, w//self.SCALE))
-
-        # Reset cell state
-        cell_g = x_q.new_zeros((batch_size, self.h_dim, h//self.SCALE, w//self.SCALE))
-        cell_i = x_q.new_zeros((batch_size, self.h_dim, h//self.SCALE, w//self.SCALE))
-        
-        u = x.new_zeros((batch_size, self.h_dim, h, w))
-        
-        _x_q = self.downsample_x(x_q)
-
-        kls = 0
-        for _ in range(self.L):
-            # kl
-            z = self.q.sample({"h_i": hidden_i}, reparam=True)["z"]
-            kl = KullbackLeibler(self.q, self.pi)
-            kl_tensor = kl.estimate({"h_i":hidden_i, "h_g":hidden_g})
-            kls += kl_tensor
-            # update state
-            _u = self.downsample_u(u)
-            hidden_i, cell_i = self.inference_core(_x_q, v_q, r, hidden_g, hidden_i, cell_i, _u)
-            hidden_g, cell_g, u = self.generator_core(z, v_q, r, hidden_g, cell_g, u)
+        # Representation network
+        if representation=="pyramid":
+            self.phi = Pyramid()
+        elif representation=="tower":
+            self.phi = Tower()
+        elif representation=="pool":
+            self.phi = Pool()
             
-        x_q_rec = torch.clamp(self.g.sample_mean({"u": u, "sigma":sigma}), 0, 1)
-        nll = NLL(self.g)
-        nll_tensor = nll.estimate({"u":u, "sigma":sigma, "x_q": x_q})
+        # Generation network
+        if shared_core:
+            self.inference_core = InferenceCore()
+            self.generation_core = GenerationCore()
+        else:
+            self.inference_core = nn.ModuleList([InferenceCore() for _ in range(L)])
+            self.generation_core = nn.ModuleList([GenerationCore() for _ in range(L)])
+        
+        # Distribution
+        self.pi = Prior()
+        self.q = Inference()
+        self.g = Generation()
 
-        return nll_tensor, kls, x_q_rec
+    # EstimateELBO
+    def forward(self, x, v, v_q, x_q, sigma):
+        B, M, *_ = x.size()
+        
+        # Scene encoder
+        r = x.new_zeros((B, 256, 16, 16))
+        for k in range(M):
+            r_k = self.phi(x[:, k], v[:, k])
+            r += r_k
+            
+        # Generator initial state
+        c_g = x.new_zeros((B, 128, 16, 16))
+        h_g = x.new_zeros((B, 128, 16, 16))
+        u = x.new_zeros((B, 128, 64, 64))
+
+        # Inference initial state
+        c_e = x.new_zeros((B, 128, 16, 16))
+        h_e = x.new_zeros((B, 128, 16, 16))
+                
+        elbo = 0
+        for l in range(self.L):
+            # Inference state update
+            if self.shared_core:
+                c_e, h_e = self.inference_core(x_q, v_q, r, c_e, h_e, h_g, u)
+            else:
+                c_e, h_e = self.inference_core[l](x_q, v_q, r, c_e, h_e, h_g, u)
+            
+            # Posterior sample
+            z = self.q.sample({"h_e": h_e}, reparam=True)["z"]
+            
+            # ELBO KL contribution update
+            elbo -= KullbackLeibler(self.q, self.pi).estimate({"h_e": h_e, "h_g": h_g})
+            
+            # Generator state update
+            if self.shared_core:
+                c_g, h_g, u = self.generation_core(v_q, r, c_g, h_g, u, z)
+            else:
+                c_g, h_g, u = self.generation_core[l](v_q, r, c_g, h_g, u, z)
+                
+        # ELBO likelihood contribution update
+        elbo -= NLL(self.g).estimate({"u":u, "sigma":sigma, "x_q": x_q})
+
+        return elbo
     
     def generate(self, x, v, v_q):
-        batch_size, n_views, _, h, w = x.size()
+        B, M, *_ = x.size()
         
-        # Merge batch and view dimensions.
-        _, _, *x_dims = x.size()
-        _, _, *v_dims = v.size()
+        # Scene encoder
+        r = x.new_zeros((B, 256, 16, 16))
+        for k in range(M):
+            r_k = self.phi(x[:, k], v[:, k])
+            r += r_k
 
-        x = x.contiguous().view((-1, *x_dims))
-        v = v.contiguous().view((-1, *v_dims))
-
-        # representation generated from input images
-        # and corresponding viewpoints
-        r = self.phi(x, v)
-
-        # Seperate batch and view dimensions
-        _, *r_dims = r.size()
-        r = r.view((batch_size, n_views, *r_dims))
-
-        # sum over view representations
-        r = torch.sum(r, dim=1)
-
-        # Increase dimensions
-        v_q = v_q.view(batch_size, -1, 1, 1).repeat(1, 1, h//self.SCALE, w//self.SCALE)
+        # Initial state
+        c_g = x.new_zeros((B, 128, 16, 16))
+        h_g = x.new_zeros((B, 128, 16, 16))
+        u = x.new_zeros((B, 128, 64, 64))
         
-        if r.size(2) != h//self.SCALE:
-            r = r.repeat(1, 1, h//self.SCALE, w//self.SCALE)
-
-        # Reset hidden state
-        hidden_g = x.new_zeros((batch_size, self.h_dim, h//self.SCALE, w//self.SCALE))
-
-        # Reset cell state
-        cell_g = x.new_zeros((batch_size, self.h_dim, h//self.SCALE, w//self.SCALE))
-        
-        u = x.new_zeros((batch_size, self.h_dim, h, w))
-        
-        for _ in range(self.L):
-            # kl
-            z = self.pi.sample({"h_g": hidden_g})["z"]
-            # update state
-            hidden_g, cell_g, u = self.generator_core(z, v_q, r, hidden_g, cell_g, u)
+        for l in range(self.L):
+            # Prior sample
+            z = self.pi.sample({"h_g": h_g})["z"]
             
-        x_q_hat = torch.clamp(self.g.sample_mean({"u": u, "sigma":sigma}), 0, 1)
+            # State update
+            if self.shared_core:
+                c_g, h_g, u = self.generation_core(v_q, r, c_g, h_g, u, z)
+            else:
+                c_g, h_g, u = self.generation_core[l](v_q, r, c_g, h_g, u, z)
+            
+        x_q_hat = self.g.sample_mean({"u": u, "sigma": 0})
 
-        return x_q_hat
+        return torch.clamp(x_q_hat, 0, 1)
+    
+    def kl_divergence(self, x, v, v_q, x_q):
+        B, M, *_ = x.size()
+
+        # Scene encoder
+        r = x.new_zeros((B, 256, 16, 16))
+        for k in range(M):
+            r_k = self.phi(x[:, k], v[:, k])
+            r += r_k
+            
+        # Generator initial state
+        c_g = x.new_zeros((B, 128, 16, 16))
+        h_g = x.new_zeros((B, 128, 16, 16))
+        u = x.new_zeros((B, 128, 64, 64))
+
+        # Inference initial state
+        c_e = x.new_zeros((B, 128, 16, 16))
+        h_e = x.new_zeros((B, 128, 16, 16))
+                
+        kl = 0
+        for l in range(self.L):
+            # Inference state update
+            if self.shared_core:
+                c_e, h_e = self.inference_core(x_q, v_q, r, c_e, h_e, h_g, u)
+            else:
+                c_e, h_e = self.inference_core[l](x_q, v_q, r, c_e, h_e, h_g, u)
+            
+            # Posterior sample
+            z = self.q.sample({"h_e": h_e}, reparam=True)["z"]
+            
+            # KL divergence
+            kl += KullbackLeibler(self.q, self.pi).estimate({"h_e": h_e, "h_g": h_g})
+            
+            # Generator state update
+            if self.shared_core:
+                c_g, h_g, u = self.generation_core(v_q, r, c_g, h_g, u, z)
+            else:
+                c_g, h_g, u = self.generation_core[l](v_q, r, c_g, h_g, u, z)
+
+        return kl
+    
+    def reconstruct(self, x, v, v_q, x_q):
+        B, M, *_ = x.size()
+
+        # Scene encoder
+        r = x.new_zeros((B, 256, 16, 16))
+        for k in range(M):
+            r_k = self.phi(x[:, k], v[:, k])
+            r += r_k
+            
+        # Generator initial state
+        c_g = x.new_zeros((B, 128, 16, 16))
+        h_g = x.new_zeros((B, 128, 16, 16))
+        u = x.new_zeros((B, 128, 64, 64))
+
+        # Inference initial state
+        c_e = x.new_zeros((B, 128, 16, 16))
+        h_e = x.new_zeros((B, 128, 16, 16))
+                
+        for l in range(self.L):
+            # Inference state update
+            if self.shared_core:
+                c_e, h_e = self.inference_core(x_q, v_q, r, c_e, h_e, h_g, u)
+            else:
+                c_e, h_e = self.inference_core[l](x_q, v_q, r, c_e, h_e, h_g, u)
+            
+            # Posterior sample
+            z = self.q.sample({"h_e": h_e}, reparam=True)["z"]
+            
+            # Generator state update
+            if self.shared_core:
+                c_g, h_g, u = self.generation_core(v_q, r, c_g, h_g, u, z)
+            else:
+                c_g, h_g, u = self.generation_core[l](v_q, r, c_g, h_g, u, z)
+                
+        x_q_rec = self.g.sample_mean({"u": u, "sigma": 0})
+
+        return torch.clamp(x_q_rec, 0, 1)
+    
