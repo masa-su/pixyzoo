@@ -5,7 +5,8 @@ from pixyz.distributions import Normal
 from representation import Pyramid, Tower, Pool
 from inference import InferenceCore, Inference
 from generation import GenerationCore, Prior, Generation
-    
+from pixyz.losses import NLL, KullbackLeibler
+
 class GQN(nn.Module):
     def __init__(self, representation="pool", L=12, shared_core=False):
         super(GQN, self).__init__()
