@@ -3,7 +3,7 @@
 This repository contains various deep generative models implemented in [Pixyz](https://github.com/masa-su/pixyz).
 
 # To Be Implemented
-- [ ] GQN, WIP
+- [x] GQN
 - [ ] Consistent GQN, WIP
 - [ ] DRAW
 - [ ] Conv DRAW
