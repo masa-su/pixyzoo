@@ -6,6 +6,7 @@ from tensorboardX import SummaryWriter
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
+from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
 
 from gqn_dataset import GQNDataset, Scene, transform_viewpoint, sample_batch
@@ -26,7 +27,7 @@ if __name__ == '__main__':
     parser.add_argument('--save_interval', type=int, help='interval number of steps for saveing models', default=10000)
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=0)
     parser.add_argument('--data_parallel', type=bool, help='whether to parallelise based on data (default: False)', default=False)
-    parser.add_argument('--seed', type=int, default=None)
+    parser.add_argument('--seed', type=int, help='random seed (default: None)', default=None)
     args = parser.parse_args()
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -73,7 +74,7 @@ if __name__ == '__main__':
     # Define model
     model = GQN().to(device)
     if args.data_parallel:
-        model = nn.DataParallel(model, device_ids=[0,1])
+        model = nn.DataParallel(model, device_ids=[0,1,2])
 
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, betas=(0.9, 0.999), eps=1e-08)
     scheduler = AnnealingStepLR(optimizer, mu_i=5e-4, mu_f=5e-5, n=1.6e6)
