@@ -19,6 +19,7 @@ class GQN(nn.Module):
         self.shared_core = shared_core
         
         # Representation network
+        self.representation = representation
         if representation=="pyramid":
             self.phi = Pyramid()
         elif representation=="tower":
@@ -44,7 +45,10 @@ class GQN(nn.Module):
         B, M, *_ = x.size()
         
         # Scene encoder
-        r = x.new_zeros((B, 256, 16, 16))
+        if self.representation=="tower":
+            r = x.new_zero((B, 256, 16, 16))
+        else:
+            r = x.new_zeros((B, 256, 1, 1))
         for k in range(M):
             r_k = self.phi(x[:, k], v[:, k])
             r += r_k
@@ -87,7 +91,10 @@ class GQN(nn.Module):
         B, M, *_ = x.size()
         
         # Scene encoder
-        r = x.new_zeros((B, 256, 16, 16))
+        if self.representation=="tower":
+            r = x.new_zero((B, 256, 16, 16))
+        else:
+            r = x.new_zeros((B, 256, 1, 1))
         for k in range(M):
             r_k = self.phi(x[:, k], v[:, k])
             r += r_k
@@ -115,7 +122,10 @@ class GQN(nn.Module):
         B, M, *_ = x.size()
 
         # Scene encoder
-        r = x.new_zeros((B, 256, 16, 16))
+        if self.representation=="tower":
+            r = x.new_zero((B, 256, 16, 16))
+        else:
+            r = x.new_zeros((B, 256, 1, 1))
         for k in range(M):
             r_k = self.phi(x[:, k], v[:, k])
             r += r_k
@@ -155,7 +165,10 @@ class GQN(nn.Module):
         B, M, *_ = x.size()
 
         # Scene encoder
-        r = x.new_zeros((B, 256, 16, 16))
+        if self.representation=="tower":
+            r = x.new_zero((B, 256, 16, 16))
+        else:
+            r = x.new_zeros((B, 256, 1, 1))
         for k in range(M):
             r_k = self.phi(x[:, k], v[:, k])
             r += r_k

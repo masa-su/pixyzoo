@@ -8,7 +8,6 @@ from torch import nn
 from torch.utils.data import DataLoader
 from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
-
 from gqn_dataset import GQNDataset, Scene, transform_viewpoint, sample_batch
 from scheduler import AnnealingStepLR
 from model import GQN
@@ -23,10 +22,15 @@ if __name__ == '__main__':
     parser.add_argument('--test_data_dir', type=str, help='location of test data', \
                         default="/workspace/dataset/shepard_metzler_7_parts-torch/test")
     parser.add_argument('--root_log_dir', type=str, help='root location of log', default='/workspace/logs')
+    parser.add_argument('--log_dir', type=str, help='log directory (default: GQN)', default='GQN')
     parser.add_argument('--log_interval', type=int, help='interval number of steps for logging', default=100)
     parser.add_argument('--save_interval', type=int, help='interval number of steps for saveing models', default=10000)
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=0)
     parser.add_argument('--device_ids', type=int, nargs='+', help='list of CUDA devices (default: [0])', default=[0])
+    parser.add_argument('--representation', type=str, help='representation network (default: pool)', default='pool')
+    parser.add_argument('--layers', type=int, help='number of generative layers (default: 12)', default=12)
+    parser.add_argument('--share_core', type=bool, help='whether to share the weights of the cores across generation steps (default: False)', \
+                        default=False)
     parser.add_argument('--seed', type=int, help='random seed (default: None)', default=None)
     args = parser.parse_args()
 
@@ -47,8 +51,7 @@ if __name__ == '__main__':
     # Log
     log_interval_num = args.log_interval
     save_interval_num = args.save_interval
-    dir_name = str(datetime.datetime.now())
-    log_dir = os.path.join(args.root_log_dir, dir_name)
+    log_dir = os.path.join(args.root_log_dir, args.log_dir)
     os.mkdir(log_dir)
     os.mkdir(os.path.join(log_dir, 'models'))
     os.mkdir(os.path.join(log_dir,'runs'))
@@ -67,12 +70,15 @@ if __name__ == '__main__':
 
     # Number of scenes over which each weight update is computed
     B = args.batch_size
+    
+    # Number of generative layers
+    L =args.layers
 
     # Maximum number of training steps
     S_max = args.gradient_steps
 
     # Define model
-    model = GQN().to(device)
+    model = GQN(L=L).to(device)
     if len(args.device_ids)>1:
         model = nn.DataParallel(model, device_ids=args.device_ids)
 
