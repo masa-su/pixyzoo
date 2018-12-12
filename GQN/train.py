@@ -26,11 +26,11 @@ if __name__ == '__main__':
     parser.add_argument('--log_interval', type=int, help='interval number of steps for logging', default=100)
     parser.add_argument('--save_interval', type=int, help='interval number of steps for saveing models', default=10000)
     parser.add_argument('--workers', type=int, help='number of data loading workers', default=0)
-    parser.add_argument('--data_parallel', type=bool, help='whether to parallelise based on data (default: False)', default=False)
+    parser.add_argument('--device_ids', type=int, nargs='+', help='list of CUDA devices (default: [0])', default=[0])
     parser.add_argument('--seed', type=int, help='random seed (default: None)', default=None)
     args = parser.parse_args()
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = f"cuda:{args.device_ids[0]}" if torch.cuda.is_available() else "cpu"
     
     # Seed
     if args.seed!=None:
@@ -73,8 +73,8 @@ if __name__ == '__main__':
 
     # Define model
     model = GQN().to(device)
-    if args.data_parallel:
-        model = nn.DataParallel(model, device_ids=[0,1,2])
+    if len(args.device_ids)>1:
+        model = nn.DataParallel(model, device_ids=args.device_ids)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=5e-4, betas=(0.9, 0.999), eps=1e-08)
     scheduler = AnnealingStepLR(optimizer, mu_i=5e-4, mu_f=5e-5, n=1.6e6)
@@ -112,7 +112,7 @@ if __name__ == '__main__':
                 x_test, v_test, x_q_test, v_q_test = sample_batch(x_data_test, v_data_test, D, M=3, seed=0)
                 elbo_test = model(x_test, v_test, v_q_test, x_q_test, sigma)
                 
-                if args.data_parallel:
+                if len(args.device_ids)>1:
                     kl_test = model.module.kl_divergence(x_test, v_test, v_q_test, x_q_test)
                     x_q_rec_test = model.module.reconstruct(x_test, v_test, v_q_test, x_q_test)
                     x_q_hat_test = model.module.generate(x_test, v_test, v_q_test)
