@@ -4,6 +4,8 @@
 
 ![img](https://storage.googleapis.com/deepmind-live-cms/images/model.width-1100.png)
 
+#### PyTorch Implementation: https://github.com/iShohei220/torch-gqn
+
 ## Requirement
 - Python >=3.6
 - Pytorch
