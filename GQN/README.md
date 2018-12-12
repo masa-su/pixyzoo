@@ -10,7 +10,7 @@
 - Pixyz
 - TensorBoardX
 
-## How to train
+## How to Train
 ```
 python train.py --train_data_dir /path/to/dataset/train --test_data_dir /path/to/dataset/test
 
