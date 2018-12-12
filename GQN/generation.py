@@ -2,7 +2,6 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from pixyz.distributions import Normal
-from pixyz.losses import NLL, KullbackLeibler
 from conv_lstm import Conv2dLSTMCell
 
 class GenerationCore(nn.Module):
