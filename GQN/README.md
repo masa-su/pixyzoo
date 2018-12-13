@@ -6,7 +6,7 @@
 
 #### PyTorch Implementation: https://github.com/iShohei220/torch-gqn
 
-## Requirement
+## Requirements
 - Python >=3.6
 - Pytorch
 - Pixyz
@@ -30,7 +30,7 @@ As far as I experimented, this change would not affect the quality of results so
 
 ## Usage
 ### dataset/convert2torch.py
-Convert TFRecord of datasets for PyTorch implementation.
+Convert TFRecords of the dataset for PyTorch implementation.
 
 ### representation.py
 Representation networks (See Figure S1 in Supplementary Materials of the paper).
