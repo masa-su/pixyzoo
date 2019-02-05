@@ -8,7 +8,7 @@ This repository contains various deep generative models implemented in [Pixyz](h
 - [ ] DRAW
 - [ ] Conv DRAW
 - [ ] SCAN
-- [ ] VRNN, WIP
+- [x] VRNN (checking)
 - [ ] IntroVAE
 - [ ] beta-VAE
 - [x] TD-VAE (checking)
