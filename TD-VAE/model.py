@@ -60,7 +60,7 @@ class TDVAE(Model):
         self.step_loss = LossExpectation(self.p_b2, self.reconst + self.kl)
 
         self._loss = IterativeLoss(self.step_loss, max_iter=seq_len-1,
-                                   series_var=["x", "b"],
+                                   series_var=["x", "b"], timestep_var=["t"],
                                    slice_step=self.slice_step)
         self.loss = LossExpectation(self.belief_state_net, self._loss).mean()
 
