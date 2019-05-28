@@ -1,4 +1,4 @@
-from pixyz.losses import NLL, KullbackLeibler, IterativeLoss, LossExpectation
+from pixyz.losses import KullbackLeibler, IterativeLoss, Expectation as E
 from pixyz.distributions import Deterministic
 from pixyz.models import Model
 import torch
@@ -55,14 +55,13 @@ class TDVAE(Model):
 
         # losses
         self.kl = KullbackLeibler(self.q, self.p_b1)
-        self.reconst = LossExpectation(self.q,  NLL(self.p_t) + NLL(self.p_d)
-                                       - NLL(self.p_b2))
-        self.step_loss = LossExpectation(self.p_b2, self.reconst + self.kl)
+        self.reconst = E(self.q,  -self.p_t.log_prob() - self.p_d.log_prob() + self.p_b2.log_prob())
+        self.step_loss = E(self.p_b2, self.reconst + self.kl)
 
         self._loss = IterativeLoss(self.step_loss, max_iter=seq_len-1,
                                    series_var=["x", "b"], timestep_var=["t"],
                                    slice_step=self.slice_step)
-        self.loss = LossExpectation(self.belief_state_net, self._loss).mean()
+        self.loss = E(self.belief_state_net, self._loss).mean()
 
         super(TDVAE, self).__init__(loss=self.loss, distributions=[self.p_b1, self.p_b2, self.p_t, self.p_d, self.q,
                                                                    self.belief_state_net],
