@@ -221,7 +221,7 @@ class VRNN(nn.Module):
         return kld_loss, nll_loss
     
 
-    def sample(self, seq_len):
+    def sample(self):
         with torch.no_grad():
             x = []
             h = torch.zeros(batch_size, h_dim).to(device)
@@ -231,7 +231,7 @@ class VRNN(nn.Module):
                 prior_mean_t, prior_std_t = prior_t['loc'], prior_t['scale']
                 
                 # z_sampling
-                z_t = self.reparameterize(enc_mean_t, enc_std_t)
+                z_t = self.reparameterize(prior_mean_t, prior_std_t)
 
 
                 # feature extraction
@@ -293,11 +293,7 @@ if __name__ == '__main__':
                 
                 kld_loss, nll_loss = vrnn(data)
 
-                optimizer.zero_grad()
                 loss = kld_loss + nll_loss
-                loss.backward()
-                nn.utils.clip_grad_norm_(vrnn.parameters(), clip)
-                optimizer.step()
                 epoch_loss += loss.item()
         return epoch_loss
     for epoch in range(1, epochs):
