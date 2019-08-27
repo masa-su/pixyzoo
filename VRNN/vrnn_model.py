@@ -18,21 +18,11 @@ from pixyz.distributions import Bernoulli, Normal, Deterministic
 from pixyz.utils import print_latex
 
 
-batch_size = 64
-epochs = 100
-seed = 1
-torch.manual_seed(seed)
-np.random.seed(seed)
-random.seed(seed)
-
 if torch.cuda.is_available():
     device = "cuda"
 else:
     device = "cpu"
 
-train_loader = torch.utils.data.DataLoader(
-    datasets.MNIST('../data', train=True, download=True, transform=transforms.ToTensor()),
-    batch_size=batch_size, shuffle=True)
 
 def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma):
     '''
@@ -61,11 +51,23 @@ def bi_nll(y_hat, y):
     nll = torch.sum(nll)
     return nll
 
-
+# hyper parameter
 x_dim = 28
 h_dim = 100
-z_dim = 64
+z_dim = 16
+n_layers =  1
+epochs = 100
+learning_rate = 1e-3
+batch_size = 128
+seed = 128
+clip = 10
+save_every = 10
 t_max = x_dim
+torch.manual_seed(seed)
+
+train_loader = torch.utils.data.DataLoader(
+    datasets.MNIST('../data', train=True, download=True, transform=transforms.ToTensor()), batch_size=batch_size, shuffle=True)
+
 
 # xのfeature_extraction, Encoderの入力となる
 class Phi_x(nn.Module):
@@ -102,10 +104,9 @@ class Generator(Bernoulli):
         # 論文上のやつの実装
         # self.fc31 = nn.Linear(h_dim, x_dim)
         # self.fc32 = nn.Linear(h_dim, x_dim)
-        self.f_phi_z = f_phi_z
 
-    def forward(self, z, h_prev):
-        h = torch.cat((self.f_phi_z(z), h_prev), dim=-1)
+    def forward(self, extracted_z, h_prev):
+        h = torch.cat((extracted_z, h_prev), dim=-1)
         h = F.relu(self.fc1(h))
         h = F.relu(self.fc2(h))
         # MNISTだから?
@@ -137,8 +138,8 @@ class Inference(Normal):
         self.fc22 = nn.Linear(h_dim, z_dim)
         self.f_phi_x = f_phi_x
 
-    def forward(self, x, h_prev):
-        h = torch.cat((self.f_phi_x(x), h_prev), dim=-1)
+    def forward(self, extracted_x, h_prev):
+        h = torch.cat((extracted_x, h_prev), dim=-1)
         h = F.relu(self.fc1(h))
         return {"loc": self.fc21(h), "scale": F.softplus(self.fc22(h))}
 
@@ -152,14 +153,8 @@ class Recurrence(Deterministic):
         # 隠れ状態
         self.hidden_size = self.rnncell.hidden_size
         
-        # xtのfeature_extractor
-        self.f_phi_x = f_phi_x
-        #zのfeature_extractor
-        self.f_phi_z = f_phi_z
 
-    def forward(self, x, z, h_prev):
-        extracted_x = self.f_phi_x(x)
-        extracted_z = self.f_phi_z(z)
+    def forward(self, extracted_x, extracted_z, h_prev):
         
         rnn_input_t = torch.cat((extracted_z, extracted_x), dim=-1)
         h_next = self.rnncell(rnn_input_t, h_prev)
@@ -169,11 +164,13 @@ class Recurrence(Deterministic):
 class VRNN(nn.Module):
     def __init__(self):
         super(VRNN, self).__init__()
-        self.z_prior = prior
-        self.encoder = encoder
-        self.decoder = decoder
-        self.rnn = recurrence
-        self.n_layers = 1
+        self.f_phi_x = Phi_x().to(device)
+        self.f_phi_z = Phi_z().to(device)
+        self.z_prior = Prior().to(device)
+        self.encoder = Inference().to(device)
+        self.decoder = Generator().to(device)
+        self.rnn = Recurrence().to(device)
+        self.n_layers = n_layers
     
     def forward(self, x):
         all_enc_mean, all_enc_std = [], []
@@ -188,8 +185,11 @@ class VRNN(nn.Module):
         
         # timestep t分処理を行う(x.size(0)=行数)
         for t in range(x.size(0)):
+            # feature extraction
+            extracted_xt = self.f_phi_x(x[t])
+
             # Encoding
-            enc_t = self.encoder(x[t], h)
+            enc_t = self.encoder(extracted_xt, h)
             enc_mean_t, enc_std_t = enc_t['loc'], enc_t['scale']
             
             # prior
@@ -198,14 +198,17 @@ class VRNN(nn.Module):
             
             # z_sampling
             z_t = self.reparameterize(enc_mean_t, enc_std_t)
-            
+
+            # feature extraction
+            extracted_zt = self.f_phi_z(z_t)
+
             # decoding
-            dec_t = self.decoder(z_t, h)
+            dec_t = self.decoder(extracted_zt, h)
             dec_mean_t = dec_t['probs']
             #dec_std_t = dec_t['scale']
             
             # recurence
-            h = self.rnn(x[t], z_t, h)['h']
+            h = self.rnn(extracted_xt, extracted_zt, h)['h']
             
             # compute loss
             kld_loss += KLGaussianGaussian(enc_mean_t, enc_std_t, prior_mean_t, prior_std_t)
@@ -213,6 +216,36 @@ class VRNN(nn.Module):
             #nll_loss += self._nll_gauss(dec_mean_t, dec_std_t, x[t])
             nll_loss += bi_nll(dec_mean_t, x[t])
         return kld_loss, nll_loss
+    
+
+    def sample(self, seq_len):
+        sample = torch.zeros(seq_len, x_dim).to(device)
+
+        h = torch.zeros(self.n_layers, 1, self.h_dim).to(device)
+        for t in range(seq_len):
+            # prior
+            prior_t = self.z_prior(h)
+            prior_mean_t, prior_std_t = prior_t['loc'], prior_t['scale']
+            
+            # z_sampling
+            z_t = self.reparameterize(enc_mean_t, enc_std_t)
+
+
+            # feature extraction
+            extracted_zt = self.f_phi_z(z_t)
+
+            # decoding
+            dec_t = self.decoder(extracted_zt, h)
+            dec_mean_t = dec_t['probs']
+            #dec_std_t = dec_t['scale']
+
+            extracted_xt = self.f_phi_x(dec_mean_t)
+            
+            # recurence
+            h = self.rnn(extracted_xt, extracted_zt, h)['h']
+            sample[t] = dec_mean_t.data
+        return sample
+
     
     
     def reparameterize(self, mean, var):
@@ -228,20 +261,24 @@ if __name__ == '__main__':
     encoder = Inference().to(device)
     recurrence = Recurrence().to(device)
     vrnn = VRNN().to(device)
-    optimizer = optim.Adam(vrnn.parameters(), lr=0.001)
+    optimizer = optim.Adam(vrnn.parameters(), lr=learning_rate)
     def train(epochs):
-        for epoch in range(epochs):
+        for epoch in range(1, epochs+1):
             epoch_loss = 0
             for data, _ in train_loader:
                 data = data.to(device).squeeze().transpose(0, 1)
+                data = (data - data.min().item()) / (data.max().item() - data.min().item())
                 
                 kld_loss, nll_loss = vrnn(data)
 
                 optimizer.zero_grad()
                 loss = kld_loss + nll_loss
                 loss.backward()
+                nn.utils.clip_grad_norm_(vrnn.parameters(), clip)
                 optimizer.step()
                 epoch_loss += loss.item()
-            with open('./logs/train_loss.txt', 'a') as f:
-                f.write(str(epoch_loss)+'\n')
+            if epoch % save_every == 1:
+                fn = 'saves/vrnn_state_dict_' + str(epoch) + '.pth'
+                torch.save(model.state_dict(), fn)
+                print('saved model to ' + fn)
     train(epochs)
