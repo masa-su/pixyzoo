@@ -18,7 +18,7 @@ from pixyz.distributions import Bernoulli, Normal, Deterministic
 from pixyz.utils import print_latex
 
 
-batch_size = 4
+batch_size = 64
 epochs = 100
 seed = 1
 torch.manual_seed(seed)
@@ -84,6 +84,7 @@ class Phi_z(nn.Module):
 
     def forward(self, z):
         return F.relu(self.fc0(z))
+
 
 f_phi_x = Phi_x().to(device)
 f_phi_z = Phi_z().to(device)
@@ -183,7 +184,7 @@ class VRNN(nn.Module):
         dec_ts = []
         
         # torch.zeros(batch_size, h_dim), 隠れ状態の初期化
-        h = torch.zeros(x.size(1), h_dim)
+        h = torch.zeros(x.size(1), h_dim).to(device)
         
         # timestep t分処理を行う(x.size(0)=行数)
         for t in range(x.size(0)):
@@ -241,6 +242,6 @@ if __name__ == '__main__':
                 loss.backward()
                 optimizer.step()
                 epoch_loss += loss.item()
-            with open('./logs/train_loss.txt') as f:
-                f.write(epoch_loss)
+            with open('./logs/train_loss.txt', 'a') as f:
+                f.write(str(epoch_loss)+'\n')
     train(epochs)
