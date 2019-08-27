@@ -7,7 +7,7 @@ from torch import optim
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import transforms, datasets
-from tensorboardX import SummaryWriter
+#from tensorboardX import SummaryWriter
 import math
 
 
@@ -17,6 +17,22 @@ from pixyz.losses import IterativeLoss
 from pixyz.distributions import Bernoulli, Normal, Deterministic
 from pixyz.utils import print_latex
 
+
+batch_size = 4
+epochs = 100
+seed = 1
+torch.manual_seed(seed)
+np.random.seed(seed)
+random.seed(seed)
+
+if torch.cuda.is_available():
+    device = "cuda"
+else:
+    device = "cpu"
+
+train_loader = torch.utils.data.DataLoader(
+    datasets.MNIST('../data', train=True, download=True, transform=transforms.ToTensor()),
+    batch_size=batch_size, shuffle=True)
 
 def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma):
     '''
@@ -205,19 +221,7 @@ class VRNN(nn.Module):
         return z
 
 
-if __name__ == '__name__':
-    batch_size = 64
-    epochs = 100
-    seed = 1
-    torch.manual_seed(seed)
-    np.random.seed(seed)
-    random.seed(seed)
-
-    if torch.cuda.is_available():
-        device = "cuda"
-    else:
-        device = "cpu"
-    
+if __name__ == '__main__':
     prior = Prior().to(device)
     decoder = Generator().to(device)
     encoder = Inference().to(device)
@@ -229,7 +233,7 @@ if __name__ == '__name__':
         for epoch in range(epochs):
             epoch_loss = 0
             for data, _ in train_loader:
-                data = data.squeeze().transpose(0, 1)
+                data = data.to(device).squeeze().transpose(0, 1)
                 
                 kld_loss, nll_loss = vrnn(data)
 
@@ -240,4 +244,4 @@ if __name__ == '__name__':
                 epoch_loss += loss.item()
             with open('./logs/train_loss.txt') as f:
                 f.write(epoch_loss)
-
+    train(epochs)
