@@ -39,7 +39,7 @@ def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma):
     Re-parameterized formula for KL
     between Gaussian predicted by encoder and Gaussian dist
     '''
-    kl = 0.5 * (2 * torch.log(prior_sigma) - 2 * torch.log(phi_sigma) + (phi_sigma**2 + (phi_mu - prior_mu2)**2) / prior_sigma**2 - 1)
+    kl = 0.5 * (2 * torch.log(prior_sigma) - 2 * torch.log(phi_sigma) + (phi_sigma**2 + (phi_mu - prior_mu)**2) / prior_sigma**2 - 1)
     kl = torch.sum(kl)
     return kl
 
@@ -229,7 +229,6 @@ if __name__ == '__main__':
     vrnn = VRNN().to(device)
     optimizer = optim.Adam(vrnn.parameters(), lr=0.001)
     def train(epochs):
-        train_loss = 0
         for epoch in range(epochs):
             epoch_loss = 0
             for data, _ in train_loader:
