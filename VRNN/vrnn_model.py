@@ -7,7 +7,7 @@ from torch import optim
 import torch.nn as nn
 import torch.nn.functional as F
 from torchvision import transforms, datasets
-#from tensorboardX import SummaryWriter
+from tensorboardX import SummaryWriter
 import math
 
 
@@ -67,6 +67,9 @@ torch.manual_seed(seed)
 
 train_loader = torch.utils.data.DataLoader(
     datasets.MNIST('../data', train=True, download=True, transform=transforms.ToTensor()), batch_size=batch_size, shuffle=True)
+test_loader = torch.utils.data.DataLoader(
+    datasets.MNIST('../data', train=False, download=True, transform=transforms.ToTensor()), batch_size=batch_size, shuffle=True)
+
 
 
 # xのfeature_extraction, Encoderの入力となる
@@ -219,32 +222,33 @@ class VRNN(nn.Module):
     
 
     def sample(self, seq_len):
-        sample = torch.zeros(seq_len, x_dim).to(device)
+        with torch.no_grad():
+            x = []
+            h = torch.zeros(batch_size, h_dim).to(device)
+            for step in range(t_max):
+                # prior
+                prior_t = self.z_prior(h)
+                prior_mean_t, prior_std_t = prior_t['loc'], prior_t['scale']
+                
+                # z_sampling
+                z_t = self.reparameterize(enc_mean_t, enc_std_t)
 
-        h = torch.zeros(self.n_layers, 1, self.h_dim).to(device)
-        for t in range(seq_len):
-            # prior
-            prior_t = self.z_prior(h)
-            prior_mean_t, prior_std_t = prior_t['loc'], prior_t['scale']
-            
-            # z_sampling
-            z_t = self.reparameterize(enc_mean_t, enc_std_t)
 
+                # feature extraction
+                extracted_zt = self.f_phi_z(z_t)
 
-            # feature extraction
-            extracted_zt = self.f_phi_z(z_t)
+                # decoding
+                dec_t = self.decoder(extracted_zt, h)
+                dec_mean_t = dec_t['probs']
+                #dec_std_t = dec_t['scale']
 
-            # decoding
-            dec_t = self.decoder(extracted_zt, h)
-            dec_mean_t = dec_t['probs']
-            #dec_std_t = dec_t['scale']
-
-            extracted_xt = self.f_phi_x(dec_mean_t)
-            
-            # recurence
-            h = self.rnn(extracted_xt, extracted_zt, h)['h']
-            sample[t] = dec_mean_t.data
-        return sample
+                extracted_xt = self.f_phi_x(dec_mean_t)
+                
+                # recurence
+                h = self.rnn(extracted_xt, extracted_zt, h)['h']
+                x.append(dec_mean_t[None, :])
+            x = torch.cat(x, dim=0).transpose(0, 1)
+        return x
 
     
     
@@ -262,10 +266,28 @@ if __name__ == '__main__':
     recurrence = Recurrence().to(device)
     vrnn = VRNN().to(device)
     optimizer = optim.Adam(vrnn.parameters(), lr=learning_rate)
-    def train(epochs):
-        for epoch in range(1, epochs+1):
-            epoch_loss = 0
-            for data, _ in train_loader:
+    writer = SummaryWriter()
+    def train():
+        vrnn.train()
+        epoch_loss = 0
+        for data, _ in train_loader:
+            data = data.to(device).squeeze().transpose(0, 1)
+            data = (data - data.min().item()) / (data.max().item() - data.min().item())
+            
+            kld_loss, nll_loss = vrnn(data)
+
+            optimizer.zero_grad()
+            loss = kld_loss + nll_loss
+            loss.backward()
+            nn.utils.clip_grad_norm_(vrnn.parameters(), clip)
+            optimizer.step()
+            epoch_loss += loss.item()
+        return epoch_loss
+    def test():
+        vrnn.eval()
+        epoch_loss = 0
+        with torch.no_grad():
+            for data, _ in test_loader:
                 data = data.to(device).squeeze().transpose(0, 1)
                 data = (data - data.min().item()) / (data.max().item() - data.min().item())
                 
@@ -277,8 +299,16 @@ if __name__ == '__main__':
                 nn.utils.clip_grad_norm_(vrnn.parameters(), clip)
                 optimizer.step()
                 epoch_loss += loss.item()
-            if epoch % save_every == 1:
-                fn = 'saves/vrnn_state_dict_' + str(epoch) + '.pth'
-                torch.save(model.state_dict(), fn)
-                print('saved model to ' + fn)
-    train(epochs)
+        return epoch_loss
+    for epoch in range(1, epochs):
+        train_loss = train()
+        test_loss = test()
+        writer.add_scalar('train_loss', train_loss, epoch)
+        writer.add_scalar('test_loss', test_loss, epoch)
+        sample = vrnn.sample()[:, None]
+        writer.add_images('Image_from_latent', sample, epoch)
+
+    if epoch % save_every == 1:
+            fn = 'saves/vrnn_state_dict_' + str(epoch) + '.pth'
+            torch.save(model.state_dict(), fn)
+            print('saved model to ' + fn)
