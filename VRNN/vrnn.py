@@ -216,10 +216,16 @@ def plot_image_from_latent(batch_size):
     x = []
     h_prev = torch.zeros(batch_size, recurrence.hidden_size).to(device)
     for step in range(t_max):
-        samples = generate_from_prior.sample({'h_prev': h_prev})
-        x_t = decoder.sample_mean({"z": samples["z"], "h_prev": samples["h_prev"]})
-        h_prev = samples["h"]
-        x.append(x_t[None, :])
+        samples_z = prior.sample({'h_prev': h_prev})['z']
+
+        decoded_x = decoder(samples_z, h_prev})['prob']
+        h = recurrence(decoded_x, samples_z, h_prev)['h']
+        
+        # hの更新にx_t使ってる？
+        h_prev = h
+        print(decoded_x.shape)
+        print(decoded_x[None, :].shape)
+        x.append(decoded_x[None, :])
     x = torch.cat(x, dim=0).transpose(0, 1)
     return x
 
@@ -230,11 +236,11 @@ def plot_image_from_latent(batch_size):
 writer = SummaryWriter()
 
 for epoch in range(1, epochs + 1):
-    train_loss = data_loop(epoch, train_loader, vrnn, device, train_mode=True)
-    test_loss = data_loop(epoch, test_loader, vrnn, device)
+    #train_loss = data_loop(epoch, train_loader, vrnn, device, train_mode=True)
+    #test_loss = data_loop(epoch, test_loader, vrnn, device)
 
-    writer.add_scalar('train_loss', train_loss, epoch)
-    writer.add_scalar('test_loss', test_loss, epoch)
+    #writer.add_scalar('train_loss', train_loss, epoch)
+    #writer.add_scalar('test_loss', test_loss, epoch)
 
     sample = plot_image_from_latent(batch_size)[:, None]
     writer.add_images('Image_from_latent', sample, epoch)
