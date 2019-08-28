@@ -30,7 +30,7 @@ def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma):
     between Gaussian predicted by encoder and Gaussian dist
     '''
     kl = 0.5 * (2 * torch.log(prior_sigma) - 2 * torch.log(phi_sigma) + (phi_sigma**2 + (phi_mu - prior_mu)**2) / prior_sigma**2 - 1)
-    kl = torch.sum(kl, dim=1)
+    kl = torch.sum(kl, dim=1).mean()
     return kl
 
 
@@ -48,7 +48,7 @@ def bi_nll(y_hat, y):
     binary cross entropy
     '''
     nll = - (y * torch.log(y_hat) + (1 - y) * torch.log(1 - y_hat))
-    nll = torch.sum(nll, dim=1)
+    nll = torch.sum(nll, dim=1).mean()
     return nll
 
 # hyper parameter
@@ -209,10 +209,10 @@ class VRNN(nn.Module):
             h = self.rnn(extracted_xt, extracted_zt, h)['h']
             
             # compute loss
-            kld_loss += KLGaussianGaussian(enc_mean_t, enc_std_t, prior_mean_t, prior_std_t).mean()
+            kld_loss += KLGaussianGaussian(enc_mean_t, enc_std_t, prior_mean_t, prior_std_t)
             
             #nll_loss += self._nll_gauss(dec_mean_t, dec_std_t, x[t])
-            nll_loss += bi_nll(dec_mean_t, x[t]).mean()
+            nll_loss += bi_nll(dec_mean_t, x[t])
         return kld_loss, nll_loss
     
 
