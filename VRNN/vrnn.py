@@ -16,10 +16,6 @@ import torch.nn.functional as F
 from torchvision import transforms, datasets
 from tensorboardX import SummaryWriter
 
-batch_size = 128
-epochs = 100
-seed = 1
-torch.manual_seed(seed)
 
 if torch.cuda.is_available():
     device = "cuda"
@@ -69,6 +65,10 @@ x_dim = 28
 h_dim = 100
 z_dim = 16
 t_max = x_dim
+batch_size = 128
+epochs = 100
+seed = 128
+torch.manual_seed(seed)
 
 class Phi_x(nn.Module):
     def __init__(self):
@@ -180,7 +180,7 @@ loss = IterativeLoss(step_loss, max_iter=t_max,
                      update_value={"h": "h_prev"})
 
 vrnn = Model(loss, distributions=[encoder, decoder, prior, recurrence],
-             optimizer=optim.Adam, optimizer_params={'lr': 1e-4}, clip_grad_norm=10)
+             optimizer=optim.Adam, optimizer_params={'lr': 1e-3})
 
 print(vrnn)
 print_latex(vrnn)
