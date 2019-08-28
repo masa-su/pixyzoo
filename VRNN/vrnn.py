@@ -218,13 +218,11 @@ def plot_image_from_latent(batch_size):
     for step in range(t_max):
         samples_z = prior.sample({'h_prev': h_prev})['z']
 
-        decoded_x = decoder(samples_z, h_prev})['prob']
+        decoded_x = decoder(samples_z, h_prev)['probs']
         h = recurrence(decoded_x, samples_z, h_prev)['h']
         
-        # hの更新にx_t使ってる？
+        # hの更新にx_t使った
         h_prev = h
-        print(decoded_x.shape)
-        print(decoded_x[None, :].shape)
         x.append(decoded_x[None, :])
     x = torch.cat(x, dim=0).transpose(0, 1)
     return x
