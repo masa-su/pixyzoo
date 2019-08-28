@@ -30,7 +30,7 @@ def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma):
     between Gaussian predicted by encoder and Gaussian dist
     '''
     kl = 0.5 * (2 * torch.log(prior_sigma) - 2 * torch.log(phi_sigma) + (phi_sigma**2 + (phi_mu - prior_mu)**2) / prior_sigma**2 - 1)
-    kl = torch.sum(kl)
+    kl = torch.sum(kl, dim=1)
     return kl
 
 
@@ -48,7 +48,7 @@ def bi_nll(y_hat, y):
     binary cross entropy
     '''
     nll = - (y * torch.log(y_hat) + (1 - y) * torch.log(1 - y_hat))
-    nll = torch.sum(nll)
+    nll = torch.sum(nll, dim=1)
     return nll
 
 # hyper parameter
@@ -89,10 +89,6 @@ class Phi_z(nn.Module):
 
     def forward(self, z):
         return F.relu(self.fc0(z))
-
-
-f_phi_x = Phi_x().to(device)
-f_phi_z = Phi_z().to(device)
 
 
 # zとh_t-1に条件づけられたxt
@@ -139,7 +135,6 @@ class Inference(Normal):
         self.fc1 = nn.Linear(h_dim + h_dim, h_dim)
         self.fc21 = nn.Linear(h_dim, z_dim)
         self.fc22 = nn.Linear(h_dim, z_dim)
-        self.f_phi_x = f_phi_x
 
     def forward(self, extracted_x, h_prev):
         h = torch.cat((extracted_x, h_prev), dim=-1)
@@ -214,10 +209,10 @@ class VRNN(nn.Module):
             h = self.rnn(extracted_xt, extracted_zt, h)['h']
             
             # compute loss
-            kld_loss += KLGaussianGaussian(enc_mean_t, enc_std_t, prior_mean_t, prior_std_t)
+            kld_loss += KLGaussianGaussian(enc_mean_t, enc_std_t, prior_mean_t, prior_std_t).mean()
             
             #nll_loss += self._nll_gauss(dec_mean_t, dec_std_t, x[t])
-            nll_loss += bi_nll(dec_mean_t, x[t])
+            nll_loss += bi_nll(dec_mean_t, x[t]).mean()
         return kld_loss, nll_loss
     
 
@@ -279,7 +274,6 @@ if __name__ == '__main__':
             optimizer.zero_grad()
             loss = kld_loss + nll_loss
             loss.backward()
-            nn.utils.clip_grad_norm_(vrnn.parameters(), clip)
             optimizer.step()
             epoch_loss += loss.item()
         return epoch_loss
