@@ -16,7 +16,7 @@ import torch.nn.functional as F
 from torchvision import transforms, datasets
 from tensorboardX import SummaryWriter
 
-batch_size = 64
+batch_size = 128
 epochs = 100
 seed = 1
 torch.manual_seed(seed)
@@ -67,7 +67,7 @@ from pixyz.utils import print_latex
 
 x_dim = 28
 h_dim = 100
-z_dim = 64
+z_dim = 16
 t_max = x_dim
 
 class Phi_x(nn.Module):
@@ -180,7 +180,7 @@ loss = IterativeLoss(step_loss, max_iter=t_max,
                      update_value={"h": "h_prev"})
 
 vrnn = Model(loss, distributions=[encoder, decoder, prior, recurrence],
-             optimizer=optim.Adam, optimizer_params={'lr': 1e-3})
+             optimizer=optim.Adam, optimizer_params={'lr': 1e-4}, clip_grad_norm=10)
 
 print(vrnn)
 print_latex(vrnn)
