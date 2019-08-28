@@ -234,11 +234,11 @@ def plot_image_from_latent(batch_size):
 writer = SummaryWriter()
 
 for epoch in range(1, epochs + 1):
-    #train_loss = data_loop(epoch, train_loader, vrnn, device, train_mode=True)
-    #test_loss = data_loop(epoch, test_loader, vrnn, device)
+    train_loss = data_loop(epoch, train_loader, vrnn, device, train_mode=True)
+    test_loss = data_loop(epoch, test_loader, vrnn, device)
 
-    #writer.add_scalar('train_loss', train_loss, epoch)
-    #writer.add_scalar('test_loss', test_loss, epoch)
+    writer.add_scalar('train_loss', train_loss, epoch)
+    writer.add_scalar('test_loss', test_loss, epoch)
 
     sample = plot_image_from_latent(batch_size)[:, None]
     writer.add_images('Image_from_latent', sample, epoch)
