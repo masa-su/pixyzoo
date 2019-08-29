@@ -56,13 +56,8 @@ x_dim = 28
 h_dim = 100
 z_dim = 16
 n_layers =  1
-epochs = 100
-learning_rate = 1e-4
-batch_size = 128
-seed = 612
 clip = 10
 save_every = 10
-torch.manual_seed(seed)
 
 def init_dataset(f_batch_size):
     kwargs = {'num_workers': 1, 'pin_memory': True}
@@ -81,8 +76,6 @@ def init_dataset(f_batch_size):
 
     fixed_t_size = 28
     return train_loader, test_loader, fixed_t_size
-
-train_loader, test_loader, t_max = init_dataset(batch_size)
 
 # xのfeature_extraction, Encoderの入力となる
 class Phi_x(nn.Module):
@@ -263,13 +256,30 @@ class VRNN(nn.Module):
 
 
 if __name__ == '__main__':
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--seed', type=int, default=128)
+    parser.add_argument('--lr', type=float, default=1e-3)
+    parser.add_argument('--batch_size', type=int, default=256)
+    parser.add_argument('--epochs', type=int, default=20)
+    args = parser.parse_args()
+
+    lr = args.lr
+    seed = args.seed
+    batch_size = args.batch_size
+    epochs = args.epochs
+    torch.manual_seed(seed)
+
+    train_loader, test_loader, t_max = init_dataset(batch_size)
+
     prior = Prior().to(device)
     decoder = Generator().to(device)
     encoder = Inference().to(device)
     recurrence = Recurrence().to(device)
     vrnn = VRNN().to(device)
-    optimizer = optim.Adam(vrnn.parameters(), lr=learning_rate)
-    writer = SummaryWriter()
+    optimizer = optim.Adam(vrnn.parameters(), lr=lr)
+    
+    writer = SummaryWriter(comment='LR_{}_SEED_{}_bsize_{}'.fotmat(lr, seed, batch_size)
     def train():
         vrnn.train()
         epoch_loss = 0
