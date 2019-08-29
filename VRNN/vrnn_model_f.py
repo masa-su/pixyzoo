@@ -57,9 +57,9 @@ h_dim = 100
 z_dim = 16
 n_layers =  1
 epochs = 100
-learning_rate = 1e-3
+learning_rate = 1e-4
 batch_size = 128
-seed = 128
+seed = 612
 clip = 10
 save_every = 10
 torch.manual_seed(seed)
