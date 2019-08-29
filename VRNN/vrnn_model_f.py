@@ -279,7 +279,7 @@ if __name__ == '__main__':
     vrnn = VRNN().to(device)
     optimizer = optim.Adam(vrnn.parameters(), lr=lr)
     
-    writer = SummaryWriter(comment='LR_{}_SEED_{}_bsize_{}'.fotmat(lr, seed, batch_size)
+    writer = SummaryWriter(comment='LR_{}_SEED_{}_bsize_{}'.fotmat(lr, seed, batch_size))
     def train():
         vrnn.train()
         epoch_loss = 0
