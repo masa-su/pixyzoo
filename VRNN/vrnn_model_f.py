@@ -62,15 +62,27 @@ batch_size = 128
 seed = 128
 clip = 10
 save_every = 10
-t_max = x_dim
 torch.manual_seed(seed)
 
-train_loader = torch.utils.data.DataLoader(
-    datasets.MNIST('../data', train=True, download=True, transform=transforms.ToTensor()), batch_size=batch_size, shuffle=True)
-test_loader = torch.utils.data.DataLoader(
-    datasets.MNIST('../data', train=False, download=True, transform=transforms.ToTensor()), batch_size=batch_size, shuffle=True)
+def init_dataset(f_batch_size):
+    kwargs = {'num_workers': 1, 'pin_memory': True}
+    data_dir = '../data'
+    mnist_transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Lambda(lambda data: data[0])
+    ])
+    train_loader = torch.utils.data.DataLoader(
+        datasets.MNIST(data_dir, train=True, download=True,
+                       transform=mnist_transform),
+        batch_size=f_batch_size, shuffle=True, **kwargs)
+    test_loader = torch.utils.data.DataLoader(
+        datasets.MNIST(data_dir, train=False, transform=mnist_transform),
+        batch_size=f_batch_size, shuffle=True, **kwargs)
 
+    fixed_t_size = 28
+    return train_loader, test_loader, fixed_t_size
 
+train_loader, test_loader, t_max = init_dataset(batch_size)
 
 # xのfeature_extraction, Encoderの入力となる
 class Phi_x(nn.Module):
@@ -185,7 +197,7 @@ class VRNN(nn.Module):
         for t in range(x.size(0)):
 
             # Encoding
-            enc_t = self.encoder(self.f_phi_x(xt), h)
+            enc_t = self.encoder(self.f_phi_x(x[t]), h)
             enc_mean_t, enc_std_t = enc_t['loc'], enc_t['scale']
             
             # prior
@@ -202,7 +214,7 @@ class VRNN(nn.Module):
             #dec_std_t = dec_t['scale']
             
             # recurence
-            h = self.rnn(self.f_phi_x(xt), self.f_phi_z(z_t), h)['h']
+            h = self.rnn(self.f_phi_x(x[t]), self.f_phi_z(z_t), h)['h']
             
             # compute loss
             kld_loss += KLGaussianGaussian(enc_mean_t, enc_std_t, prior_mean_t, prior_std_t)
@@ -263,7 +275,7 @@ if __name__ == '__main__':
         epoch_loss = 0
         for data, _ in train_loader:
             b_size = data.size()[0]
-            data = data.to(device).squeeze().transpose(0, 1)
+            data = data.to(device).transpose(0, 1)
             #data = (data - data.min().item()) / (data.max().item() - data.min().item())
             
             kld_loss, nll_loss = vrnn(data)
@@ -281,8 +293,8 @@ if __name__ == '__main__':
         with torch.no_grad():
             for data, _ in test_loader:
                 b_size = data.size()[0]
-                data = data.to(device).squeeze().transpose(0, 1)
-                data = (data - data.min().item()) / (data.max().item() - data.min().item())
+                data = data.to(device).transpose(0, 1)
+                #data = (data - data.min().item()) / (data.max().item() - data.min().item())
                 
                 kld_loss, nll_loss = vrnn(data)
 
