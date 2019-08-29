@@ -185,13 +185,6 @@ loss = IterativeLoss(step_loss, max_iter=t_max,
                      series_var=['x'],
                      update_value={"h": "h_prev"})
 
-class VRNNModel(Model):
-    def __init__(self, loss, distributions_list, optimizer, optimizer_params_dict):
-        super().__init__(loss=loss, distributions=distributions_list, optimizer=optimizer, optimizer_params=optimizer_params_dict)
-
-    def train():
-
-
 vrnn = Model(loss, distributions=[encoder, decoder, prior, recurrence],
              optimizer=optim.Adam, optimizer_params={'lr': lr})
 
