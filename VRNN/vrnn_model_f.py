@@ -273,6 +273,8 @@ if __name__ == '__main__':
     def train():
         vrnn.train()
         epoch_loss = 0
+        epoch_kld_loss = 0
+        epoch_nll_loss = 0
         for data, _ in train_loader:
             b_size = data.size()[0]
             data = data.to(device).transpose(0, 1)
@@ -285,11 +287,17 @@ if __name__ == '__main__':
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item() * b_size
+            epoch_kld_loss += kld_loss.item() * b_size
+            epoch_nll_loss += nll_loss.item() * b_size
         epoch_loss /= len(train_loader.dataset)
-        return epoch_loss
+        epoch_kld_loss /= len(train_loader.dataset)
+        epoch_nll_loss /= len(train_loader.dataset)
+        return epoch_loss, epoch_kld_loss, epoch_nll_loss
     def test():
         vrnn.eval()
         epoch_loss = 0
+        epoch_kld_loss = 0
+        epoch_nll_loss = 0
         with torch.no_grad():
             for data, _ in test_loader:
                 b_size = data.size()[0]
@@ -299,14 +307,23 @@ if __name__ == '__main__':
                 kld_loss, nll_loss = vrnn(data)
 
                 loss = kld_loss + nll_loss
-                epoch_loss += loss.item()* b_size
+                epoch_loss += loss.item() * b_size
+                epoch_kld_loss += kld_loss.item() * b_size
+                epoch_nll_loss += nll_loss.item() * b_size
         epoch_loss /= len(test_loader.dataset)
-        return epoch_loss
+        epoch_kld_loss /= len(test_loader.dataset)
+        epoch_nll_loss /= len(test_loader.dataset)
+        return epoch_loss, epoch_kld_loss, epoch_nll_loss
     for epoch in range(1, epochs):
-        train_loss = train()
-        test_loss = test()
+        train_loss, train_kld_loss, train_nll_loss = train()
+        test_loss, test_kld_loss, test_nll_loss = test()
         writer.add_scalar('train_loss', train_loss, epoch)
+        writer.add_scalar('train_kld_loss', train_kld_loss, epoch)
+        writer.add_scalar('train_nll_loss', train_nll_loss, epoch)
+
         writer.add_scalar('test_loss', test_loss, epoch)
+        writer.add_scalar('test_kld_loss', test_kld_loss, epoch)
+        writer.add_scalar('test_nll_loss', test_nll_loss, epoch)
         sample = vrnn.sample()[:, None]
         writer.add_images('Image_from_latent', sample, epoch)
 
