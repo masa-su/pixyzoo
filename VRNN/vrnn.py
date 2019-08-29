@@ -22,6 +22,22 @@ if torch.cuda.is_available():
 else:
     device = "cpu"
 
+import argparse
+parser = argparse.ArgumentParser()
+parser.add_argument('--lr', type=float, default=1e-3)
+parser.add_argument('--seed', type=int, default=128)
+parser.add_argument('--epochs', type=int, default=20)
+parser.add_argument('--batch_size', type=int, default=256)
+args = parser.parse_args()
+x_dim = 28
+h_dim = 100
+z_dim = 16
+t_max = x_dim
+batch_size = args.batch_size
+epochs = args.epochs
+lr = args.lr
+seed = args.seed
+torch.manual_seed(seed)
 
 # In[2]:
 
@@ -59,16 +75,6 @@ from pixyz.utils import print_latex
 
 
 # In[4]:
-
-
-x_dim = 28
-h_dim = 100
-z_dim = 16
-t_max = x_dim
-batch_size = 128
-epochs = 100
-seed = 128
-torch.manual_seed(seed)
 
 class Phi_x(nn.Module):
     def __init__(self):
@@ -179,8 +185,15 @@ loss = IterativeLoss(step_loss, max_iter=t_max,
                      series_var=['x'],
                      update_value={"h": "h_prev"})
 
+class VRNNModel(Model):
+    def __init__(self, loss, distributions_list, optimizer, optimizer_params_dict):
+        super().__init__(loss=loss, distributions=distributions_list, optimizer=optimizer, optimizer_params=optimizer_params_dict)
+
+    def train():
+
+
 vrnn = Model(loss, distributions=[encoder, decoder, prior, recurrence],
-             optimizer=optim.Adam, optimizer_params={'lr': 1e-3})
+             optimizer=optim.Adam, optimizer_params={'lr': lr})
 
 print(vrnn)
 print_latex(vrnn)
@@ -231,7 +244,7 @@ def plot_image_from_latent(batch_size):
 # In[10]:
 
 
-writer = SummaryWriter()
+writer = SummaryWriter((comment='Pix_LR_{}_SEED_{}_bsize_{}'.fotmat(lr, seed, batch_size))
 
 for epoch in range(1, epochs + 1):
     train_loss = data_loop(epoch, train_loader, vrnn, device, train_mode=True)
