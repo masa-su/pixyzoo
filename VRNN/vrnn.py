@@ -244,7 +244,7 @@ def plot_image_from_latent(batch_size):
 # In[10]:
 
 
-writer = SummaryWriter((comment='Pix_LR_{}_SEED_{}_bsize_{}'.format(lr, seed, batch_size))
+writer = SummaryWriter(comment='Pix_LR_{}_SEED_{}_bsize_{}'.format(lr, seed, batch_size))
 
 for epoch in range(1, epochs + 1):
     train_loss = data_loop(epoch, train_loader, vrnn, device, train_mode=True)
