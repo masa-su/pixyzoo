@@ -277,7 +277,7 @@ if __name__ == '__main__':
             loss.backward()
             optimizer.step()
             epoch_loss += loss.item() * b_size
-        epoch_loss /= len(train_loader)
+        epoch_loss /= len(train_loader.dataset)
         return epoch_loss
     def test():
         vrnn.eval()
@@ -292,7 +292,7 @@ if __name__ == '__main__':
 
                 loss = kld_loss + nll_loss
                 epoch_loss += loss.item()* b_size
-        epoch_loss /= len(test_loader)
+        epoch_loss /= len(test_loader.dataset)
         return epoch_loss
     for epoch in range(1, epochs):
         train_loss = train()
