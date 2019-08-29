@@ -266,8 +266,9 @@ if __name__ == '__main__':
         vrnn.train()
         epoch_loss = 0
         for data, _ in train_loader:
+            b_size = data.size()[0]
             data = data.to(device).squeeze().transpose(0, 1)
-            data = (data - data.min().item()) / (data.max().item() - data.min().item())
+            #data = (data - data.min().item()) / (data.max().item() - data.min().item())
             
             kld_loss, nll_loss = vrnn(data)
 
@@ -275,20 +276,23 @@ if __name__ == '__main__':
             loss = kld_loss + nll_loss
             loss.backward()
             optimizer.step()
-            epoch_loss += loss.item()
+            epoch_loss += loss.item() * b_size
+        epoch_loss /= len(train_loader)
         return epoch_loss
     def test():
         vrnn.eval()
         epoch_loss = 0
         with torch.no_grad():
             for data, _ in test_loader:
+                b_size = data.size()[0]
                 data = data.to(device).squeeze().transpose(0, 1)
                 data = (data - data.min().item()) / (data.max().item() - data.min().item())
                 
                 kld_loss, nll_loss = vrnn(data)
 
                 loss = kld_loss + nll_loss
-                epoch_loss += loss.item()
+                epoch_loss += loss.item()* b_size
+        epoch_loss /= len(test_loader)
         return epoch_loss
     for epoch in range(1, epochs):
         train_loss = train()
