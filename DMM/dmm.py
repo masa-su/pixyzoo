@@ -227,7 +227,7 @@ for epoch in range(1, epochs + 1):
     writer.add_scalar('train_loss', train_loss, epoch)
     writer.add_scalar('test_loss', test_loss, epoch)
 
-    sample = plot_image_from_latent(batch_size)[:, None][1,:]
+    sample = plot_image_from_latent(batch_size)[:, None]
     writer.add_image('Image_from_latent', sample, epoch)
 
 
