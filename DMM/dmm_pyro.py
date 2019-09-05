@@ -238,11 +238,11 @@ class DMM(nn.Module):
         # define a (trainable) parameters z_0 and z_q_0 that help define
         # the probability distributions p(z_1) and q(z_1)
         # (since for t = 1 there are no previous latents to condition on)
-        self.z_0 = nn.Parameter(torch.zeros(z_dim))
-        self.z_q_0 = nn.Parameter(torch.zeros(z_dim))
+        self.z_0 = nn.Parameter(torch.zeros(z_dim)).to(device)
+        self.z_q_0 = nn.Parameter(torch.zeros(z_dim)).to(device)
 
         # define a (trainable) parameter for the initial hidden state of the rnn
-        self.h_0 = nn.Parameter(torch.zeros(1, 1, rnn_dim))
+        self.h_0 = nn.Parameter(torch.zeros(1, 1, rnn_dim)).to(device)
     
     # the model p(x_{1:T} | z_{1:T} p(z_{1:T}))
     def generate(self, x):
@@ -331,16 +331,9 @@ class DMM(nn.Module):
             # the latent sampled at this time step will be conditioned upon
             # in the next time step so keep track of it
             prior_z_prev = prior_z_t
+        return 
 
 
-
-
-
-
-
-    
-    
-    
     def reparameterize(self, loc, scale):
         """using std to sample"""
         eps = torch.randn(loc.size()).to(device)
@@ -434,6 +427,54 @@ def plot_image_from_latent(batch_size):
 # In[19]:
 
 writer = SummaryWriter(comment='Pix_LR_{}_SEED_{}_bsize_{}'.format(lr, seed, batch_size))
+def train(model):
+    model.train()
+    epoch_loss = 0
+    epoch_kld_loss = 0
+    epoch_nll_loss = 0
+    for data, _ in train_loader:
+        b_size = data.size()[0]
+        data = data.to(device).transpose(0, 1)
+        #data = (data - data.min().item()) / (data.max().item() - data.min().item())
+        
+        kld_loss, nll_loss = model(data)
+
+        optimizer.zero_grad()
+        loss = kld_loss + nll_loss
+        loss.backward()
+        optimizer.step()
+        epoch_loss += loss.item() * b_size
+        epoch_kld_loss += kld_loss.item() * b_size
+        epoch_nll_loss += nll_loss.item() * b_size
+    epoch_loss /= len(train_loader.dataset)
+    epoch_kld_loss /= len(train_loader.dataset)
+    epoch_nll_loss /= len(train_loader.dataset)
+    return epoch_loss, epoch_kld_loss, epoch_nll_loss
+dmm = DMM().to(device)
+
+train(dmm)
+def test(model):
+    model.eval()
+    epoch_loss = 0
+    epoch_kld_loss = 0
+    epoch_nll_loss = 0
+    with torch.no_grad():
+        for data, _ in test_loader:
+            b_size = data.size()[0]
+            data = data.to(device).transpose(0, 1)
+            #data = (data - data.min().item()) / (data.max().item() - data.min().item())
+            
+            kld_loss, nll_loss = model(data)
+
+            loss = kld_loss + nll_loss
+            epoch_loss += loss.item() * b_size
+            epoch_kld_loss += kld_loss.item() * b_size
+            epoch_nll_loss += nll_loss.item() * b_size
+    epoch_loss /= len(test_loader.dataset)
+    epoch_kld_loss /= len(test_loader.dataset)
+    epoch_nll_loss /= len(test_loader.dataset)
+    return epoch_loss, epoch_kld_loss, epoch_nll_loss
+
 
 for epoch in range(1, epochs + 1):
     train_loss = data_loop(epoch, train_loader, dmm, device, train_mode=True)
@@ -442,8 +483,8 @@ for epoch in range(1, epochs + 1):
     writer.add_scalar('train_loss', train_loss, epoch)
     writer.add_scalar('test_loss', test_loss, epoch)
 
-    sample = plot_image_from_latent(batch_size)[:, None][1,:]
-    writer.add_image('Image_from_latent', sample, epoch)
+    sample = plot_image_from_latent(batch_size)[:, None]
+    writer.add_images('Image_from_latent', sample, epoch)
 
 
 # In[ ]:
