@@ -67,14 +67,6 @@ def init_dataset(f_batch_size):
 train_loader, test_loader, t_max = init_dataset(batch_size)
 
 
-# In[5]:
-
-from pixyz.models import Model
-from pixyz.losses import KullbackLeibler, CrossEntropy, IterativeLoss
-from pixyz.distributions import Bernoulli, Normal, Deterministic
-from pixyz.utils import print_latex
-
-
 # In[6]:
 # Loss in https://github.com/clinicalml/dmm/blob/master/model_th/dmm.py
 def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma):
@@ -103,7 +95,7 @@ class RNN(nn.Module):
     deterministic
     '''
     def __init__(self):
-        super(RNN, self).__init__(cond_var=["x"], var=["h"])
+        super(RNN, self).__init__()
         self.rnn = nn.GRU(x_dim, rnn_dim, bidirectional=True)
 #         self.h0 = torch.zeros(2, batch_size, self.rnn.hidden_size).to(device)
         self.h0 = nn.Parameter(torch.zeros(2, 1, self.rnn.hidden_size))
@@ -126,7 +118,7 @@ class Generator(nn.Module):
     Bernoulli
     '''
     def __init__(self):
-        super(Generator, self).__init__(cond_var=["z"], var=["x"])
+        super(Generator, self).__init__()
         # initialize the two linear transformations used in the neural network
         self.lin_z_to_hidden = nn.Linear(z_dim, hidden_dim)
         self.lin_hidden_to_input = nn.Linear(hidden_dim, x_dim)
@@ -156,7 +148,7 @@ class Inference(nn.Module):
     Normal
     '''
     def __init__(self):
-        super(Inference, self).__init__(cond_var=["h", "z_prev"], var=["z"])
+        super(Inference, self).__init__()
         # initialize the three linear transformations used in the neural network
         self.lin_z_to_hidden = nn.Linear(z_dim, rnn_dim*2)
         self.lin_hidden_to_loc = nn.Linear(rnn_dim*2, z_dim)
@@ -192,7 +184,7 @@ class Prior(nn.Module):
     Normal
     '''
     def __init__(self):
-        super(Prior, self).__init__(cond_var=["z_prev"], var=["z"])
+        super(Prior, self).__init__()
         # initialize the 3 linear transformations used in the neural network
         self.lin_gate_z_to_hidden = nn.Linear(z_dim, transition_dim)
         self.lin_gate_hidden_to_z = nn.Linear(transition_dim, z_dim)
