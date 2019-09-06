@@ -76,8 +76,24 @@ from pixyz.utils import print_latex
 
 
 # In[6]:
+# Loss in https://github.com/clinicalml/dmm/blob/master/model_th/dmm.py
+def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma):
+    '''
+    Re-parameterized formula for KL
+    between Gaussian predicted by encoder and Gaussian dist
+    '''
+    kl = 0.5 * (2 * torch.log(prior_sigma) - 2 * torch.log(phi_sigma) + (phi_sigma**2 + (phi_mu - prior_mu)**2) / prior_sigma**2 - 1)
+    kl = torch.sum(kl, dim=1).mean()
+    return kl
 
 
+def bi_nll(y_hat, y):
+    '''
+    binary cross entropy
+    '''
+    nll = - (y * torch.log(y_hat) + (1 - y) * torch.log(1 - y_hat))
+    nll = torch.sum(nll, dim=1).mean()
+    return nll
 # In[7]:
 
 class RNN(Deterministic):
@@ -87,7 +103,7 @@ class RNN(Deterministic):
     '''
     def __init__(self):
         super(RNN, self).__init__(cond_var=["x"], var=["h"])
-        self.rnn = nn.GRU(x_dim, h_dim, bidirectional=True)
+        self.rnn = nn.GRU(x_dim, rnn_dim, bidirectional=True)
 #         self.h0 = torch.zeros(2, batch_size, self.rnn.hidden_size).to(device)
         self.h0 = nn.Parameter(torch.zeros(2, 1, self.rnn.hidden_size))
         self.hidden_size = self.rnn.hidden_size
@@ -139,9 +155,9 @@ class Inference(Normal):
     def __init__(self):
         super(Inference, self).__init__(cond_var=["h", "z_prev"], var=["z"])
         # initialize the three linear transformations used in the neural network
-        self.lin_z_to_hidden = nn.Linear(z_dim, rnn_dim)
-        self.lin_hidden_to_loc = nn.Linear(rnn_dim, z_dim)
-        self.lin_hidden_to_scale = nn.Linear(rnn_dim, z_dim)
+        self.lin_z_to_hidden = nn.Linear(z_dim, rnn_dim*2)
+        self.lin_hidden_to_loc = nn.Linear(rnn_dim*2, z_dim)
+        self.lin_hidden_to_scale = nn.Linear(rnn_dim*2, z_dim)
         # initialize the two non-linearities used in the neural network
         self.tanh = nn.Tanh()
         self.softplus = nn.Softplus()
@@ -175,9 +191,9 @@ class Prior(Normal):
         super(Prior, self).__init__(cond_var=["z_prev"], var=["z"])
         # initialize the 3 linear transformations used in the neural network
         self.lin_gate_z_to_hidden = nn.Linear(z_dim, transition_dim)
-        self.lin_gate_hideen_to_z = nn.Linear(transition_dim, z_dim)
+        self.lin_gate_hidden_to_z = nn.Linear(transition_dim, z_dim)
 
-        self.lin_proposed_mean_z_to_hidden = nn.Linear(z_dim, transtion_dim)
+        self.lin_proposed_mean_z_to_hidden = nn.Linear(z_dim, transition_dim)
         self.lin_proposed_mean_hidden_to_z = nn.Linear(transition_dim, z_dim)
 
         self.lin_sig = nn.Linear(z_dim, z_dim)
@@ -227,7 +243,7 @@ class DMM(nn.Module):
     this pytorch module encapsulates the model as well as the 
     variational distribution (the guide) for the deep markov model
     '''
-    def _init__(self):
+    def __init__(self):
         super(DMM, self).__init__()
         # instantiate pytorch modules used in the model and guide below
         self.emitter = Generator().to(device)
@@ -241,74 +257,51 @@ class DMM(nn.Module):
         self.z_0 = nn.Parameter(torch.zeros(z_dim)).to(device)
         self.z_q_0 = nn.Parameter(torch.zeros(z_dim)).to(device)
 
-        # define a (trainable) parameter for the initial hidden state of the rnn
-        self.h_0 = nn.Parameter(torch.zeros(1, 1, rnn_dim)).to(device)
-    
     # the model p(x_{1:T} | z_{1:T} p(z_{1:T}))
-    def generate(self, x):
-        # x (t_step, batch_size, features)
-        T_max = x.size(0)
-        # set z_prev = z_0 to setup the recursize conditioning in p(z_t | z_{t-1})
-        z_prev = self.z_0.expand(x.size(1), self.z_0.size(0))
+    def generate(self, sample_num):
+        with torch.no_grad():
+            x = []
 
-        for t in range(T_max):
-            # Prior
-            # first compute the parameters of the diagnal gaussian
-            z = self.trans(z_prev)
-            z_loc, z_scale = z['loc'], z['scale']
+            # set z_prev = z_0 to setup the recursize conditioning in p(z_t | z_{t-1})
+            z_prev = self.z_0.expand(sample_num, self.z_0.size(0))
 
-            # z_sampling
-            z_t = self.reparameterize(z_loc, z_scale)
+            for t in range(t_max):
+                # Prior
+                # first compute the parameters of the diagnal gaussian
+                z = self.trans(z_prev)
+                z_loc, z_scale = z['loc'], z['scale']
 
-            # compute the probabilities that parameterize the bernoulli likelihood
-            emission_probs_t = self.emitter(z_t)['probs']
+                # z_sampling
+                z_t = self.reparameterize(z_loc, z_scale)
 
-            # the latent sampled at this time step will be conditioned upon
-            # in the next time step so keep track of it
-            z_prev = z_t
-    
+                # compute the probabilities that parameterize the bernoulli likelihood
+                emission_probs_t = self.emitter(z_t)['probs']
 
-    # the inference q(z_{1:T} | x_{1:T}) (i.e. the variational distribution)
-    def inference(self, x):
-        # x(t_step, batch_size, features)
-        T_max = x.size(0)
-        # if on gpu we need the fully broadcast view of the rnn initial state
-        # to be in continguous gpu memory
-        h_0_contig = self.h_0.expand(1, x.size(1), self.rnn.hidden_size).contiguous()
+                # the latent sampled at this time step will be conditioned upon
+                # in the next time step so keep track of it
+                z_prev = z_t
 
-        # set z_prev = z_q_0 to setup the recursive conditioning in q(z_t | )
-        z_prev = self.z_q_0.expand(x.size(1), self.z_q_0.size(0))
-
-        # set z_prev = z_0 to setup the recursize conditioning in p(z_t | z_{t-1})
-        prior_z_prev = self.z_0.expand(x.size(1), self.z_0.size(0))
-
-        rnn_output = self.rnn(x, h_0_contig)
-        for t in range(T_max):
-            z_loc, z_scale = self.combiner(z_prev, rnn_output[:, t, :])
-            
-            # sample z_t from the distribution z_dist
-            z_t = self.reparameterize(z_loc, z_scale)
-
-            # the latent sampled at this time step will be conditioned 
-            # upon in the next time step so keep track of it
-            z_prev = z_t
+                x.append(emission_probs_t[None, :])
+            x = torch.cat(x, dim=0).transpose(0,1)
+        return x
     
     def forward(self, x):
+        kld_loss = 0
+        nll_loss = 0
         # x(t_step, batch_size, features)
         T_max = x.size(0)
         # if on gpu we need the fully broadcast view of the rnn initial state
         # to be in continguous gpu memory
-        h_0_contig = self.h_0.expand(1, x.size(1), self.rnn.hidden_size).contiguous()
-
         # set z_prev = z_q_0 to setup the recursive conditioning in q(z_t | )
         z_prev = self.z_q_0.expand(x.size(1), self.z_q_0.size(0))
 
         # set z_prev = z_0 to setup the recursize conditioning in p(z_t | z_{t-1})
         prior_z_prev = self.z_0.expand(x.size(1), self.z_0.size(0))
 
-        rnn_output = self.rnn(x, h_0_contig)
+        rnn_output = self.rnn(x)['h']
         for t in range(T_max):
-            z_loc, z_scale = self.combiner(z_prev, rnn_output[:, t, :])
+            z = self.combiner(rnn_output[t], z_prev)
+            z_loc, z_scale = z['loc'], z['scale']
             
             # sample z_t from the distribution z_dist
             z_t = self.reparameterize(z_loc, z_scale)
@@ -331,7 +324,11 @@ class DMM(nn.Module):
             # the latent sampled at this time step will be conditioned upon
             # in the next time step so keep track of it
             prior_z_prev = prior_z_t
-        return 
+
+            kld_loss += KLGaussianGaussian(z_loc, z_scale, prior_z_loc, prior_z_scale)
+            nll_loss += bi_nll(emission_probs_t, x[t])
+
+        return kld_loss, nll_loss
 
 
     def reparameterize(self, loc, scale):
@@ -350,84 +347,10 @@ encoder = Inference().to(device)
 decoder = Generator().to(device)
 rnn = RNN().to(device)
 
-
-# In[12]:
-
-print(prior)
-print("*"*80)
-print(encoder)
-print("*"*80)
-print(decoder)
-print("*"*80)
-print(rnn)
-
-
-# In[13]:
-
-generate_from_prior = prior * decoder
-print(generate_from_prior)
-print_latex(generate_from_prior)
-
-
-# In[14]:
-
-step_loss = CrossEntropy(encoder, decoder) + KullbackLeibler(encoder, prior)
-_loss = IterativeLoss(step_loss, max_iter=t_max, 
-                      series_var=["x", "h"], update_value={"z": "z_prev"})
-loss = _loss.expectation(rnn).mean()
-
-
-# In[15]:
-
-dmm = Model(loss, distributions=[rnn, encoder, decoder, prior], 
-            optimizer=optim.RMSprop, optimizer_params={"lr": 5e-4}, clip_grad_value=10)
-
-
-# In[16]:
-
-print(dmm)
-print_latex(dmm)
-
-
-# In[17]:
-
-def data_loop(epoch, loader, model, device, train_mode=False):
-    mean_loss = 0
-    for batch_idx, (data, _) in enumerate(tqdm(loader)):
-        data = data.to(device)
-        batch_size = data.size()[0]
-        x = data.transpose(0, 1)
-        z_prev = torch.zeros(batch_size, z_dim).to(device)
-        if train_mode:
-            mean_loss += model.train({'x': x, 'z_prev': z_prev}).item() * batch_size
-        else:
-            mean_loss += model.test({'x': x, 'z_prev': z_prev}).item() * batch_size
-    mean_loss /= len(loader.dataset)
-    if train_mode:
-        print('Epoch: {} Train loss: {:.4f}'.format(epoch, mean_loss))
-    else:
-        print('Test loss: {:.4f}'.format(mean_loss))
-    return mean_loss
-
-
-# In[18]:
-
-def plot_image_from_latent(batch_size):
-    x = []
-    z_prev = torch.zeros(batch_size, z_dim).to(device)
-    for step in range(t_max):
-        samples = generate_from_prior.sample({'z_prev': z_prev})
-        x_t = decoder.sample_mean({"z": samples["z"]})
-        z_prev = samples["z"]
-        x.append(x_t[None, :])
-    x = torch.cat(x, dim=0).transpose(0, 1)
-    return x
-
-
 # In[19]:
 
 writer = SummaryWriter(comment='Pix_LR_{}_SEED_{}_bsize_{}'.format(lr, seed, batch_size))
-def train(model):
+def train(model, clip_grad_value):
     model.train()
     epoch_loss = 0
     epoch_kld_loss = 0
@@ -442,6 +365,7 @@ def train(model):
         optimizer.zero_grad()
         loss = kld_loss + nll_loss
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(dmm.parameters(), clip_grad_value)
         optimizer.step()
         epoch_loss += loss.item() * b_size
         epoch_kld_loss += kld_loss.item() * b_size
@@ -450,9 +374,6 @@ def train(model):
     epoch_kld_loss /= len(train_loader.dataset)
     epoch_nll_loss /= len(train_loader.dataset)
     return epoch_loss, epoch_kld_loss, epoch_nll_loss
-dmm = DMM().to(device)
-
-train(dmm)
 def test(model):
     model.eval()
     epoch_loss = 0
@@ -474,16 +395,25 @@ def test(model):
     epoch_kld_loss /= len(test_loader.dataset)
     epoch_nll_loss /= len(test_loader.dataset)
     return epoch_loss, epoch_kld_loss, epoch_nll_loss
+dmm = DMM().to(device)
+optimizer = optim.RMSprop(params=dmm.parameters(), lr=lr)
 
 
 for epoch in range(1, epochs + 1):
-    train_loss = data_loop(epoch, train_loader, dmm, device, train_mode=True)
-    test_loss = data_loop(epoch, test_loader, dmm, device)
+    dmm.train()
+    train_loss, train_kld_loss, train_nll_loss = train(model=dmm, clip_grad_value=10)
+    dmm.eval()
+    test_loss, test_kld_loss, test_nll_loss = test(dmm)
 
     writer.add_scalar('train_loss', train_loss, epoch)
+    writer.add_scalar('train_kld_loss', train_kld_loss, epoch)
+    writer.add_scalar('train_nll_loss', train_nll_loss, epoch)
+    
     writer.add_scalar('test_loss', test_loss, epoch)
+    writer.add_scalar('test_kld_loss', test_kld_loss, epoch)
+    writer.add_scalar('test_nll_loss', test_nll_loss, epoch)
 
-    sample = plot_image_from_latent(batch_size)[:, None]
+    sample = dmm.generate(batch_size)[:, None]
     writer.add_images('Image_from_latent', sample, epoch)
 
 
