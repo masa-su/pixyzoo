@@ -24,11 +24,13 @@ else:
     device = "cpu"
 
 
-def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma):
+def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma, eps=1e-5):
     '''
     Re-parameterized formula for KL
     between Gaussian predicted by encoder and Gaussian dist
+    eps: small number added to variances to avoid NaNs
     '''
+    prior_sigma = prior_sigma + eps
     kl = 0.5 * (2 * torch.log(prior_sigma) - 2 * torch.log(phi_sigma) + (phi_sigma**2 + (phi_mu - prior_mu)**2) / prior_sigma**2 - 1)
     kl = torch.sum(kl, dim=1).mean()
     return kl
