@@ -44,7 +44,7 @@ if __name__ == '__main__':
     os.mkdir(log_dir)
     os.mkdir(os.path.join(log_dir, 'models'))
     os.mkdir(os.path.join(log_dir,'runs'))
-    writer = SummaryWriter(log_dir=os.path.join(log_dir,'runs'))
+    writer = SummaryWriter(logdir=os.path.join(log_dir,'runs'))
     
     # Dataset
     if args.dataset_type == 'MovingMNIST':
