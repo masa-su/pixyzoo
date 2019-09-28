@@ -233,6 +233,24 @@ def plot_image_from_latent(batch_size):
     x = torch.cat(x, dim=0).transpose(0, 1)
     return x
 
+def reconst_image(loader):
+    for batch_idx, (data, _) in enumerate(loader):
+        xs = []
+        orignal_img = data
+        data = data.to(device)
+        x = data.transpose(0, 1)
+        batch_size = data.size()[0]
+        h_prev = torch.zeros(batch_size, recurrence.hidden_size).to(device)
+        for t in range(28):
+            x_t = x[t]
+            z_t = encoder.sample_mean({'x': x_t, 'h_prev': h_prev})
+            h = recurrence.sample_mean({'x': x_t, 'h_prev': h_prev, 'z': z_t})
+            dec_x = decoder.sample_mean({'h_prev': h_prev, 'z': z_t})
+            h_prev = h
+            xs.append(dec_x[None, :])
+        reconst_img = torch.cat(xs, dim=0).transpose(0, 1)
+        return reconst_img, original_img
+
 
 # In[10]:
 
@@ -248,4 +266,6 @@ for epoch in range(1, epochs + 1):
 
     sample = plot_image_from_latent(batch_size)[:, None]
     writer.add_images('Image_from_latent', sample, epoch)
-
+    reconst_img, original_img = reconst_image(test_loader)
+    writer.add_images('reconst', reconst_img[:, None], epoch)
+    writer.add_images('orignal', original_img[:, None], epoch)
