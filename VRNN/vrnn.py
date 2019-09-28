@@ -236,7 +236,7 @@ def plot_image_from_latent(batch_size):
 def reconst_image(loader):
     for batch_idx, (data, _) in enumerate(loader):
         xs = []
-        orignal_img = data
+        original_img = data
         data = data.to(device)
         x = data.transpose(0, 1)
         batch_size = data.size()[0]
