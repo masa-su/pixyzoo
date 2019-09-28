@@ -272,6 +272,40 @@ class VRNN(nn.Module):
             x = torch.cat(x, dim=0).transpose(0, 1)
         return x
 
+
+    def reconst(self, loader):
+        for batch_idx, (data, _) in enumerate(loader):
+            reconst = []
+            original_img = data
+            data = data.to(device)
+            x = data.transpose(0, 1)
+            batch_size = data.size()[0]
+            break
+
+        with torch.no_grad():
+            h = torch.zeros(batch_size, h_dim).to(device)
+            for t in range(t_max):
+                # infer
+                extracted_xt = self.f_phi_x(x[t])
+                enc_t = self.encoder(extracted_xt, h)
+                enc_mean_t, enc_std_t = enc_t['loc'], enc_t['scale']
+               
+                z_t = enc_mean_t
+
+
+                # feature extraction
+                extracted_zt = self.f_phi_z(z_t)
+
+                # decoding
+                dec_t = self.decoder(extracted_zt, h)
+                dec_mean_t = dec_t['probs']
+                #dec_std_t = dec_t['scale']
+                h = self.rnn(extracted_xt, extracted_zt, h)['h']
+                reconst.append(dec_mean_t[None, :])
+            reconst_img = torch.cat(reconst, dim=0).transpose(0, 1)
+        return reconst_img, original_img
+
+   
     
     
     def reparameterize(self, mean, var):
@@ -362,6 +396,10 @@ if __name__ == '__main__':
         writer.add_scalar('test_nll_loss', test_nll_loss, epoch)
         sample = vrnn.sample()[:, None]
         writer.add_images('Image_from_latent', sample, epoch)
+
+        reconst_img, original_img = vrnn.reconst(test_loader)
+        writer.add_images('reconst', reconst_img[:, None], epoch)
+        writer.add_images('orignal', original_img[:, None], epoch)
 
     if epoch % save_every == 1:
             fn = 'saves/vrnn_state_dict_' + str(epoch) + '.pth'
