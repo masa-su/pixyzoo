@@ -69,15 +69,19 @@ train_loader, test_loader, t_max = init_dataset(batch_size)
 
 # In[6]:
 # Loss in https://github.com/clinicalml/dmm/blob/master/model_th/dmm.py
-def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma, eps=0.0001):
+def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma, eps=1e-10):
     '''
     Re-parameterized formula for KL
     between Gaussian predicted by encoder and Gaussian dist
     eps: small number added to variances to avoid NaNs
     '''
     prior_sigma = prior_sigma + eps
-    kl = 0.5 * (2 * torch.log(prior_sigma) - 2 * torch.log(phi_sigma) + (phi_sigma.pow(2) + (phi_mu - prior_mu).pow(2)) / prior_sigma.pow(2) - 1)
+    kl = 0.5 * (2 * torch.log(prior_sigma) - 2 * torch.log(phi_sigma) + (phi_sigma**2 + (phi_mu - prior_mu)**2) / prior_sigma**2 - 1)
     kl = torch.sum(kl, dim=1).mean()
+    if torch.isnan(kl):
+        print('kl is Nan')
+    if torch.isinf(kl):
+        print('kl is inf')
     return kl
 
 
@@ -85,8 +89,22 @@ def bi_nll(y_hat, y):
     '''
     binary cross entropy
     '''
-    nll = - (y * torch.log(y_hat) + (1 - y) * torch.log(1 - y_hat))
+    eps = 1e-10
+    nll = - (y * torch.log(y_hat+eps) + (1 - y) * torch.log(1 - y_hat + eps))
     nll = torch.sum(nll, dim=1).mean()
+    if torch.isnan(nll):
+        print('nll is nan')
+        #print('y_hat', y_hat)
+        #print('y', y)
+        #print('log_y_hat', torch.log(y_hat))
+        #print('log 1 - y_hat', torch.log(1-y_hat))
+        #print('y * log y_hat', y * torch.log(y_hat))
+        #print('1-y * log 1 - y_hat', (1 - y) * torch.log(1 - y_hat))
+        #print(- (y * torch.log(y_hat) + (1 - y) * torch.log(1 - y_hat)))
+        #print('sum', torch.sum(- (y * torch.log(y_hat) + (1 - y) * torch.log(1 - y_hat)), dim=1))
+        #print('mean', torch.sum(- (y * torch.log(y_hat) + (1 - y) * torch.log(1 - y_hat)), dim=1).mean())
+    if torch.isinf(nll):
+        print('nll is inf')
     return nll
 # In[7]:
 
@@ -283,6 +301,29 @@ class DMM(nn.Module):
             x = torch.cat(x, dim=0).transpose(0,1)
         return x
     
+    def reconst(self, loader):
+        for batch_idx, (data, _) in enumerate(loader):
+            reconst = []
+            original_img = data
+            data = data.to(device)
+            x = data.transpose(0, 1)
+            batch_size = data.size()[0]
+            break
+
+        with torch.no_grad():
+            z_prev = self.z_q_0.expand(x.size(1), self.z_q_0.size(0))
+            rnn_output = self.rnn(x)['h']
+            for t in range(t_max):
+                h_t = rnn_output[t]
+                
+                z_t = z = self.combiner(h_t, z_prev)['loc']
+                
+                emission_probs_t = self.emitter(z_t)['probs']
+                reconst.append(emission_probs_t[None, :])
+                z_prev = z_t
+            reconst_img = torch.cat(reconst, dim=0).transpose(0, 1)
+        return reconst_img, original_img
+    
     def forward(self, x):
         kld_loss = 0
         nll_loss = 0
@@ -404,3 +445,6 @@ for epoch in range(1, epochs + 1):
 
     sample = dmm.generate(batch_size)[:, None]
     writer.add_images('Image_from_latent', sample, epoch)
+    reconst_img, original_img = dmm.reconst(test_loader)
+    writer.add_images('reconst', reconst_img[:, None], epoch)
+    writer.add_images('orignal', original_img[:, None], epoch)
