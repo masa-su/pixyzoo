@@ -24,7 +24,7 @@ else:
     device = "cpu"
 
 
-def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma, eps=1e-5):
+def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma, eps=1e-10):
     '''
     Re-parameterized formula for KL
     between Gaussian predicted by encoder and Gaussian dist
@@ -33,6 +33,10 @@ def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma, eps=1e-5):
     prior_sigma = prior_sigma + eps
     kl = 0.5 * (2 * torch.log(prior_sigma) - 2 * torch.log(phi_sigma) + (phi_sigma**2 + (phi_mu - prior_mu)**2) / prior_sigma**2 - 1)
     kl = torch.sum(kl, dim=1).mean()
+    if torch.isnan(kl):
+        print('kl is Nan')
+    if torch.isinf(kl):
+        print('kl is inf')
     return kl
 
 
@@ -49,8 +53,22 @@ def bi_nll(y_hat, y):
     '''
     binary cross entropy
     '''
-    nll = - (y * torch.log(y_hat) + (1 - y) * torch.log(1 - y_hat))
+    eps = 1e-10
+    nll = - (y * torch.log(y_hat+eps) + (1 - y) * torch.log(1 - y_hat + eps))
     nll = torch.sum(nll, dim=1).mean()
+    if torch.isnan(nll):
+        print('nll is nan')
+        print('y_hat', y_hat)
+        print('y', y)
+        print('log_y_hat', torch.log(y_hat))
+        print('log 1 - y_hat', torch.log(1-y_hat))
+        print('y * log y_hat', y * torch.log(y_hat))
+        print('1-y * log 1 - y_hat', (1 - y) * torch.log(1 - y_hat))
+        print(- (y * torch.log(y_hat) + (1 - y) * torch.log(1 - y_hat)))
+        print('sum', torch.sum(- (y * torch.log(y_hat) + (1 - y) * torch.log(1 - y_hat)), dim=1))
+        print('mean', torch.sum(- (y * torch.log(y_hat) + (1 - y) * torch.log(1 - y_hat)), dim=1).mean())
+    if torch.isinf(nll):
+        print('nll is inf')
     return nll
 
 # hyper parameter
