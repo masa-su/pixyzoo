@@ -11,13 +11,6 @@ from tensorboardX import SummaryWriter
 import math
 
 
-from pixyz.models import Model
-from pixyz.losses import KullbackLeibler, StochasticReconstructionLoss
-from pixyz.losses import IterativeLoss
-from pixyz.distributions import Bernoulli, Normal, Deterministic
-from pixyz.utils import print_latex
-
-
 if torch.cuda.is_available():
     device = "cuda"
 else:
@@ -25,11 +18,11 @@ else:
 
 
 def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma, eps=1e-10):
-    '''
+    """
     Re-parameterized formula for KL
     between Gaussian predicted by encoder and Gaussian dist
     eps: small number added to variances to avoid NaNs
-    '''
+    """
     prior_sigma = prior_sigma + eps
     kl = 0.5 * (2 * torch.log(prior_sigma) - 2 * torch.log(phi_sigma) + (phi_sigma**2 + (phi_mu - prior_mu)**2) / prior_sigma**2 - 1)
     kl = torch.sum(kl, dim=1).mean()
@@ -41,18 +34,18 @@ def KLGaussianGaussian(phi_mu, phi_sigma, prior_mu, prior_sigma, eps=1e-10):
 
 
 def Gaussian_nll(y, mu, sigma):
-    '''
+    """
     gaussian negative log-likelihood
-    '''
+    """
     nll = torch.sum(torch.sqrt(y - mu) / sigma**2 + 2 * torch.log(sigma) + torch.log(2 * math.pi))
     nll = 0.5 * nll
     return nll
 
 
 def bi_nll(y_hat, y):
-    '''
+    """
     binary cross entropy
-    '''
+    """
     eps = 1e-10
     nll = - (y * torch.log(y_hat+eps) + (1 - y) * torch.log(1 - y_hat + eps))
     nll = torch.sum(nll, dim=1).mean()
@@ -119,9 +112,9 @@ class Phi_z(nn.Module):
 # zとh_t-1に条件づけられたxt
 # 入力はfeature_extractされたz, h_t-1
 class Generator(nn.Module):
-    '''
+    """
     Parameterizes the bernoulli(for MNIST) observation likelihood p(x_t | z_t, h_{t-1})
-    '''
+    """
     def __init__(self):
         super(Generator, self).__init__()
         self.fc1 = nn.Linear(h_dim + h_dim, h_dim)
@@ -132,12 +125,11 @@ class Generator(nn.Module):
         # self.fc32 = nn.Linear(h_dim, x_dim)
 
     def forward(self, extracted_z, h_prev):
-        '''
+        """
         Given the latent z at a particular time step t and hidden state,
         return the vector of probabilities taht parameterizes the bernoulli distribution
         p(x_t | z_t, h_{t-1})
-        
-        '''
+        """
         h = torch.cat((extracted_z, h_prev), dim=-1)
         h = F.relu(self.fc1(h))
         h = F.relu(self.fc2(h))
@@ -150,12 +142,12 @@ class Generator(nn.Module):
 
 # 潜在変数zのprior, 通常のVAEと違いh_prevにより平均と分散が決まる, 標準正規分布ではない
 class Prior(nn.Module):
-    '''
+    """
     Normal
     Compared to normal VAE,
     VRNN's Prior for latent z is parameterized by hidden_state h_{t-1}
     z ~ N(loc(h_{t-1}), scale(h_{t-1}))
-    '''
+    """
     def __init__(self):
         super(Prior, self).__init__()
         self.fc1 = nn.Linear(h_dim, h_dim)
@@ -169,7 +161,7 @@ class Prior(nn.Module):
 
 # 事後分布の推論
 # feature_extractされたxtと, h_prevによる
-class Inference(Normal):
+class Inference(nn.Module):
     '''
     Normal
     Parameterizes q(z_t | h_{t-1}, x_t)
@@ -188,13 +180,13 @@ class Inference(Normal):
 
 
 # RNNの部分, x, z, h_prevを入力として次の隠れ状態を出力する
-class Recurrence(Deterministic):
+class Recurrence(nn.Module):
     '''
     Deterministic
     RNN for hidden_state
     '''
     def __init__(self):
-        super(Recurrence, self).__init__(cond_var=["x", "z", "h_prev"], var=["h"])
+        super(Recurrence, self).__init__()
         # 1 層のGRUCell
         self.rnncell = nn.GRUCell(h_dim * 2, h_dim).to(device)
         # 隠れ状態
@@ -259,7 +251,6 @@ class VRNN(nn.Module):
             #nll_loss += self._nll_gauss(dec_mean_t, dec_std_t, x[t])
             nll_loss += bi_nll(dec_mean_t, x[t])
         return kld_loss, nll_loss
-    
 
     def sample(self):
         with torch.no_grad():
@@ -290,15 +281,63 @@ class VRNN(nn.Module):
             x = torch.cat(x, dim=0).transpose(0, 1)
         return x
 
+    def sample_after_nsteps(self, fixed_batch, n_steps=14):
+        x = fixed_batch.transpose(0, 1)
+        batch_size = fixed_batch.size()[0]
+        with torch.no_grad():
+            samples = []
+            h = torch.zeros(batch_size, h_dim).to(device)
+            for t in range(t_max):
+                if t+1 <= n_steps:
+                    print('timestep:', t)
+                    extracted_xt = self.f_phi_x(x[t])
+                    # Encoding
+                    enc_t = self.encoder(extracted_xt, h)
+                    enc_mean_t, enc_std_t = enc_t['loc'], enc_t['scale']
+                    
+                    # z_sampling
+                    #z_t = self.reparameterize(enc_mean_t, enc_std_t)
+                    z_t = enc_mean_t
+                    # feature extraction
+                    extracted_zt = self.f_phi_z(z_t)
 
-    def reconst(self, loader):
-        for batch_idx, (data, _) in enumerate(loader):
-            reconst = []
-            original_img = data
-            data = data.to(device)
-            x = data.transpose(0, 1)
-            batch_size = data.size()[0]
-            break
+                    # decoding
+                    dec_t = self.decoder(extracted_zt, h)
+                    dec_mean_t = dec_t['probs']
+                    #dec_std_t = dec_t['scale']
+                    
+                    # recurence
+                    h = self.rnn(extracted_xt, extracted_zt, h)['h']
+                    samples.append(dec_mean_t[None, :])
+                else:
+                    print('Generate! timestep:', t)
+                    # prior
+                    prior_t = self.z_prior(h)
+                    prior_mean_t, prior_std_t = prior_t['loc'], prior_t['scale']
+                    
+                    # z_sampling
+                    z_t = prior_mean_t
+                    # feature extraction
+                    extracted_zt = self.f_phi_z(z_t)
+
+                    # decoding
+                    dec_t = self.decoder(extracted_zt, h)
+                    dec_mean_t = dec_t['probs']
+                    #dec_std_t = dec_t['scale']
+
+                    extracted_xt = self.f_phi_x(dec_mean_t)
+                    
+                    # recurence
+                    h = self.rnn(extracted_xt, extracted_zt, h)['h']
+                    samples.append(dec_mean_t[None, :])
+            samples = torch.cat(samples, dim=0).transpose(0, 1)
+        return samples
+
+
+    def reconst(self, fixed_batch):
+        x = fixed_batch.transpose(0, 1)
+        batch_size = fixed_batch.size()[0]
+        reconst = []
 
         with torch.no_grad():
             h = torch.zeros(batch_size, h_dim).to(device)
@@ -321,8 +360,7 @@ class VRNN(nn.Module):
                 h = self.rnn(extracted_xt, extracted_zt, h)['h']
                 reconst.append(dec_mean_t[None, :])
             reconst_img = torch.cat(reconst, dim=0).transpose(0, 1)
-        return reconst_img, original_img
-
+        return reconst_img
    
     
     
@@ -402,6 +440,8 @@ if __name__ == '__main__':
         epoch_kld_loss /= len(test_loader.dataset)
         epoch_nll_loss /= len(test_loader.dataset)
         return epoch_loss, epoch_kld_loss, epoch_nll_loss
+    _x, _ = iter(test_loader).next()
+    _x = _x.to(device)
     for epoch in range(1, epochs):
         train_loss, train_kld_loss, train_nll_loss = train()
         test_loss, test_kld_loss, test_nll_loss = test()
@@ -415,9 +455,13 @@ if __name__ == '__main__':
         sample = vrnn.sample()[:, None]
         writer.add_images('Image_from_latent', sample, epoch)
 
-        reconst_img, original_img = vrnn.reconst(test_loader)
+        sample_after_nsteps = vrnn.sample_after_nsteps(fixed_batch=_x)[:, None]
+        writer.add_images('Image_after_14steps', sample_after_nsteps, epoch)
+
+        reconst_img= vrnn.reconst(fixed_batch=_x)
         writer.add_images('reconst', reconst_img[:, None], epoch)
-        writer.add_images('orignal', original_img[:, None], epoch)
+
+        writer.add_images('orignal', _x[:, None], epoch)
 
     if epoch % save_every == 1:
             fn = 'saves/vrnn_state_dict_' + str(epoch) + '.pth'
