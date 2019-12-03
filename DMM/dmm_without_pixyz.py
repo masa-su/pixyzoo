@@ -301,14 +301,10 @@ class DMM(nn.Module):
             x = torch.cat(x, dim=0).transpose(0,1)
         return x
     
-    def reconst(self, loader):
-        for batch_idx, (data, _) in enumerate(loader):
-            reconst = []
-            original_img = data
-            data = data.to(device)
-            x = data.transpose(0, 1)
-            batch_size = data.size()[0]
-            break
+    def reconst(self, img):
+        reconst = []
+        data = img.to(device)
+        x = data.transpose(0, 1)
 
         with torch.no_grad():
             z_prev = self.z_q_0.expand(x.size(1), self.z_q_0.size(0))
@@ -322,7 +318,32 @@ class DMM(nn.Module):
                 reconst.append(emission_probs_t[None, :])
                 z_prev = z_t
             reconst_img = torch.cat(reconst, dim=0).transpose(0, 1)
-        return reconst_img, original_img
+        return reconst_img
+
+    def sample_after_nsteps(self, img, n_step):
+        sample = []
+        data = img.to(device)
+        x = data.transpose(0, 1)
+
+        with torch.no_grad():
+            z_prev = self.z_q_0.expand(x.size(1), self.z_q_0.size(0))
+            rnn_output = self.rnn(x)['h']
+            for t in range(t_max):
+                if t+1 < n_step:
+                    h_t = rnn_output[t]
+                    
+                    z_t = z = self.combiner(h_t, z_prev)['loc']
+                    
+                    emission_probs_t = self.emitter(z_t)['probs']
+                    sample.append(emission_probs_t[None, :])
+                    z_prev = z_t
+                else:
+                    z_t = self.trans(z_prev)['loc']
+                    emission_probs_t = self.emitter(z_t)['probs']
+                    sample.append(emission_probs_t[None, :])
+                    z_prev = z_t
+            sample_img_after_nteps = torch.cat(sample, dim=0).transpose(0, 1)
+        return sample_img_after_nteps
     
     def forward(self, x):
         kld_loss = 0
@@ -428,6 +449,9 @@ writer = SummaryWriter(comment='LR_{}_SEED_{}_bsize_{}'.format(lr, seed, batch_s
 dmm = DMM().to(device)
 optimizer = optim.RMSprop(params=dmm.parameters(), lr=lr)
 
+# fix for checking training procedure
+_x, _ = iter(test_loader).next()
+_x = _x.to(device)
 
 for epoch in range(1, epochs + 1):
     dmm.train()
@@ -445,6 +469,11 @@ for epoch in range(1, epochs + 1):
 
     sample = dmm.generate(batch_size)[:, None]
     writer.add_images('Image_from_latent', sample, epoch)
-    reconst_img, original_img = dmm.reconst(test_loader)
+
+    reconst_img = dmm.reconst(_x)
     writer.add_images('reconst', reconst_img[:, None], epoch)
-    writer.add_images('orignal', original_img[:, None], epoch)
+
+    sample_img_after_nteps = dmm.sample_after_nsteps(_x, 14)
+    writer.add_images('after_nsteps', sample_img_after_nteps[:, None], epoch)
+
+    writer.add_images('original', _x[:, None], epoch)
