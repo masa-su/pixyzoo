@@ -5,3 +5,4 @@
 WARNING: Pixyz version 0.1.0 is required
 
 * dmm.ipynb: Pixyz implementation of the Deep Markov Model
+* dmm_without_pixyz.py: Deep Markov Model without Pixyz (Referencing https://pyro.ai/examples/dmm.html)
