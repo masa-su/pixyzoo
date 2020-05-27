@@ -8,14 +8,14 @@ This repository contains various deep generative models implemented in [Pixyz](h
 - [ ] DRAW
 - [ ] Conv DRAW
 - [ ] SCAN
-- [x] VRNN (checking)
-- [x] Deep Markov Model（checking）
+- [x] VRNN
+- [x] Deep Markov Model
 - [ ] IntroVAE
 - [ ] beta-VAE
-- [x] TD-VAE (checking)
+- [x] TD-VAE
 - [x] Variational Information Bottleneck
 - [ ] WGAN
-- [x] Factor VAE (checking)
+- [x] Factor VAE
 - [ ] VGAN
 - [x] DynaNet
 

@@ -5,7 +5,7 @@ from pixyz.distributions import Normal
 from representation import Pyramid, Tower, Pool
 from inference import InferenceCore, Inference
 from generation import GenerationCore, Prior, Generation
-from pixyz.losses import NLL, KullbackLeibler
+from pixyz.losses import KullbackLeibler
 
 class GQN(nn.Module):
     def __init__(self, representation="pool", L=12, shared_core=False):
@@ -72,7 +72,7 @@ class GQN(nn.Module):
             z = self.q.sample({"h_e": h_e}, reparam=True)["z"]
             
             # ELBO KL contribution update
-            elbo -= KullbackLeibler(self.q, self.pi).estimate({"h_e": h_e, "h_g": h_g})
+            elbo -= KullbackLeibler(self.q, self.pi).eval({"h_e": h_e, "h_g": h_g})
             
             # Generator state update
             if self.shared_core:
@@ -81,7 +81,7 @@ class GQN(nn.Module):
                 c_g, h_g, u = self.generation_core[l](v_q, r, c_g, h_g, u, z)
                 
         # ELBO likelihood contribution update
-        elbo -= NLL(self.g).estimate({"u":u, "sigma":sigma, "x_q": x_q})
+        elbo += self.g.log_prob().eval({"u":u, "sigma":sigma, "x_q": x_q})
 
         return elbo
     
@@ -149,7 +149,7 @@ class GQN(nn.Module):
             z = self.q.sample({"h_e": h_e}, reparam=True)["z"]
             
             # KL divergence
-            kl += KullbackLeibler(self.q, self.pi).estimate({"h_e": h_e, "h_g": h_g})
+            kl += KullbackLeibler(self.q, self.pi).eval({"h_e": h_e, "h_g": h_g})
             
             # Generator state update
             if self.shared_core:
