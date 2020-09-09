@@ -57,7 +57,12 @@ if __name__ == '__main__':
     os.mkdir(os.path.join(log_dir,'runs'))
 
     # TensorBoardX
-    writer = SummaryWriter(log_dir=os.path.join(log_dir,'runs'))
+    import datetime
+    dt_now = datetime.datetime.now()
+    exp_time = dt_now.strftime('%Y%m%d_%H:%M:%S')
+    import pixyz
+    v = pixyz.__version__
+    writer = SummaryWriter("../runs/" + v + ".gqn" + exp_time)
 
     # Dataset
     train_dataset = GQNDataset(root_dir=train_data_dir, target_transform=transform_viewpoint)
@@ -92,7 +97,9 @@ if __name__ == '__main__':
 
     train_iter = iter(train_loader)
     x_data_test, v_data_test = next(iter(test_loader))
-
+    
+    import time
+    start = time.time()
     # Training Iterations
     for t in tqdm(range(S_max)):
         try:
@@ -149,5 +156,7 @@ if __name__ == '__main__':
         # Pixel-variance annealing
         sigma = max(sigma_f + (sigma_i - sigma_f)*(1 - t/(2e5)), sigma_f)
         
-    torch.save(model.state_dict(), log_dir + "/models/model-final.pt")  
+    torch.save(model.state_dict(), log_dir + "/models/model-final.pt")
+    elapsed_time = time.time() - start
+    writer.add_scalar('Exp time second', elapsed_time)
     writer.close()
