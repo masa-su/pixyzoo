@@ -1,16 +1,16 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-
+from initializer import initialize_weight
 from pixyz.distributions import Normal
 from pixyz.losses import LogProb, KullbackLeibler
 z1_dim = 32
 z2_dim = 256
-embedded_obs_dim = 256
+encoded_obs_dim = 256
 num_seq = 8
 
 
-class ConvEmbedder(nn.Module):
+class Encoder(nn.Module):
     def __init__(self):
         """Convolutional network used for embeddings"""
         super(ConvLayers, self).__init__()
@@ -39,7 +39,8 @@ class ConvEmbedder(nn.Module):
 class Decoder(Normal):
     def __init__(self, std=0.1):
         """Decodes z into an observation"""
-        super(TransitionConvLayer, self).__init__(cond_var=)
+        super(TransitionConvLayer, self).__init__(
+            cond_var=['z1', 'z2'], var=['x_decoded'])
         self.network = nn.Sequential(
             # (32+256, 1, 1) -> (256, 4, 4)
             nn.ConvTranspose2d(input_dim, 256, 4),
@@ -59,14 +60,10 @@ class Decoder(Normal):
         ).apply(initialize_weight)
         self.std = std
 
-    def forward(self, inputs):
+    def forward(self, z1, z2):
         loc = self.network(inputs)
         scale = torch.ones_like(inputs).mul_(self.std)
         return {"loc": loc, "scale": scale}
-
-
-class Encoder(Normal):
-    def __init__(self, cond_var=[""]):
 
 
 class Gaussian(Normal):
@@ -88,10 +85,32 @@ class Gaussian(Normal):
         for varname in self.inputs:
             x.append(kwargs[varname])
         x = torch.cat(x, dim=-1)
+        x = self.fcs(x)
         loc, scale = torch.chunk(x, 2, dim=-1)
         scale = F.softplus(std) + 1e-5
         return {"loc": loc, "scale": scale}
 
+
+
+
+class FixedGaussian(nn.Module):
+    """
+    Fixed diagonal gaussian distribution.
+    """
+
+    def __init__(self, output_dim, std):
+        super(FixedGaussian, self).__init__()
+        self.output_dim = output_dim
+        self.std = std
+
+    def forward(self, x):
+        mean = torch.zeros(x.size(0), self.output_dim, device=x.device)
+        std = torch.ones(x.size(0), self.output_dim, device=x.device).mul_(self.std)
+        return mean, std
+
+    def sample(self, x):
+        mean, std = self.forward(x)
+        return mean + torch.rand_like(std) * std
 
 class QFunc(nn.Module):
     def __init__(self, z1_dim, z2_dim, num_action: int):
@@ -120,15 +139,15 @@ class QFunc(nn.Module):
 class Pie(Normal):
     def __init__(self, in_dim, action_dim):
         super(Actor, self).__init__(
-            cond_var=["x_embedded"], name='pi')  # convでembedされた系列ですが?
+            cond_var=["x_encoded"], name='pi')  # convでembedされた系列ですが?
         self.fcs = nn.Sequential(
             nn.Linear(in_dim, 256),
             nn.LeakyReLU(),
             nn.Linear(256, 2*action_dim)
         )
 
-    def forward(self, x_embedded):
-        loc, scale = torch.chunk(self.fcs(embedded_obs), 2, dim=-1)
+    def forward(self, x_encoded):
+        loc, scale = torch.chunk(self.fcs(encoded_obs), 2, dim=-1)
         self.loc = loc
         self.scale = self.scale
         return {"loc": loc, "scale": scale}
@@ -136,38 +155,103 @@ class Pie(Normal):
 
 class Actor:
     def __init__(self, action_dim):
-        self.pi = Pie(in_dim=num_seq*embedded_obs_dim +
+        self.pi = Pie(in_dim=num_seq*encoded_obs_dim +
                       (num_seq - 1)*action_dim)
 
     def sample(self, inputs):
-        action = self.pi.sample(x_embedded)
-        action = action["pi"]
-        log_prob = self.pi.dist.log_prob()
+        pi = self.pi.sample(x_encoded)["pi"]
+        action = torch.Tanh(pi)
+        log_prob = self.pi.dist.log_prob(action) + np.log(1 - action**2)
+        return action, log_prob
 
-        return torch.Tanh(action), log_prob(action)
 
-
-class GenerativeModel:
+class LatentModel:
     def __init__(self):
-        self.initial_z1_dist = Normal(loc=torch.Tensor(0.), scale=torch.Tensor(
-            1.), var=['z_1^0'], cond_var=[], name='p_0_{z1}', features_shape=[z1_dim])
-        self.initial_z2_dist = Gaussian(
+        self.encoder = Encoder()
+        self.decoder = Decoder()
+        # p(z1(0))
+        self.z1_prior_init = FixedGaussian(z1_dim, 1.0)
+
+        # p(z2(0) | z1(0))
+        self.z2_prior_init = Gaussian(
             cond_var_dict={"z_1": z1_dim}, var_dict={"z_2": z2_dim})
-        self.z1_from_z2 = Gaussian(cond_var_dict={
-            "z_t^2": z2_dim, "a_t": 1}, var_dict={"z_{t + 1}^1": z1_dim})
-        self.z2_dist = Gaussian(cond_var_dict={
-                                "z_{t + 1}^1": z1_dim, "z_t^2": z2_dim, "a_t": 1}, var_dict={"z_{t + 1}^2": z2_dim})
+
+        # p(z1(t + 1) | z2(t), a(t))
+        self.z1_prior = Gaussian(cond_var_dict={
+            "z_2^t": z2_dim, "a_t": 1}, var_dict={"z_{t + 1}^1": z1_dim})
+
+        # p(z2(t+1) | z1(t+1), z2(t), a(t))
+        self.z2_prior = Gaussian(cond_var_dict={
+            "z_{t + 1}^1": z1_dim, "z_2^t": z2_dim, "a_t": 1}, var_dict={"z_{t + 1}^2": z2_dim})
+
+        # p(r(t) | z1(t), z2(t), a(t), z1(t+1), z2(t+1))
         self.reward_dist = Gaussian(cond_var_dict={
                                     "z_1^t": z1_dim, "z_2^t": z2_dim, "z_{t + 1}^1": z1_dim, "z_{t + 1}^2": z2_dim, "a_t": 1}, var_dict={"r_t": 1})
-        self.decoder = Decoder()
+
+        # q(z1(0) | x1_encoded(0))
+        self.z1_posterior_init = Gaussian(
+            cond_var_dict={"x_encoded": encoded_obs_dim}, var_dict={"z_1": z1_dim})
+
+        # q(z1(t+1) | x_encoded(t+1), z2(t), a(t))
+        self.z1_posterior = Gaussian(
+            cond_var_dict={"x_encoded": encoded_obs_dim, "a_t": 1, "z_2^t": z2_dim}, var_dict={"z_{t + 1}^1": z1_dim})
+
+        self.z2_posterior_init = self.z2_prior_init
+        self.z2_posterior = self.z2_prior
+
+        self.apply(initialize_weight)
+
+        self.loss_kld = KullbackLeibler(self.z1_posterior, self.z1_prior)
+
+    def calculate_loss(self, state, action, reward, done):
+        x_encoded = self.encoder(state)
+        z1, z2 = self.sample_posterior(x_encoded, action)
+
+        loss_kld = self.loss_kld.eval({'z_2^t': z2, 'a_t': action, "x_encoded": x_encoded})
+        loss_img = self.decoder.log_likelihood({'x_encoded': x_encoded, 'x_decoded': state})
+        reward_estimated = self.reward_dist.sample({"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action})
+        loss_reward = - self.reward_dist.log_likelihood({"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action})
+
+        return loss_kld, loss_img, loss_reward
+
+    def sample_posterior(self, x_encoded, action):
+        z1_list = []
+        z2_list = []
+        z1 = self.z1_posterior_init.sample({'x_encoded': x_encoded})
+        z2 = self.z2_posterior_init.sample({'z_1': z1})
+
+        z1_list.append(z1)
+        z2_list.append(z2)
+
+        for t in range(1, action.size(1) + 1):
+            # q(z1(t) | x_encoded(t), z2(t-1), a(t-1))
+            z1 = self.z1_posterior.sample(
+                {'x_encoded': x_encoded[:, t],
+                 'z_2^t': z2,
+                 'a_t': action[:, t - 1]
+                   })
+            z2 = self.z2_posterior.sample(
+                {"z_{t + 1}^1": z1,
+                 "z_2^t": z2,
+                 "a_t": action[:, t - 1]
+                 })
+            z1_list.append(z1)
+            z2_list.append(z2)
+        return torch.stack(z1_list, dim=1), torch.stack(z2_list, dim=1)
+
+    def sample_prior(self, action):
+        z1_list = []
+        z2_list = []
+        z1 = self.z1_prior_init.sample(action[:, 0])
+        z2 = self.z2_prior_init.sample({'z_1': z1})
 
 
 class VariationalModel:
     def __init__(self, initial_z2_dist, z2_dist, z1_from_z2):
         self.initial_z1_dist = Gaussian(
-            cond_var_dict={"x_1_embedded": embedded_obs_dim}, var_dict={"z_1": z1_dim})
+            cond_var_dict={"x_encoded": encoded_obs_dim}, var_dict={"z_1": z1_dim})
         self.z1_dist = Gaussian(
-            cond_var_dict={"x_1_embedded":  embedded_obs_dim, "z_1": z1_dim, "a_t": 1, "z_t^2": z2_dim}, var_dict={"z_{t + 1}^1"})  # (26)
+            cond_var_dict={"x_encoded":  encoded_obs_dim, "z_1": z1_dim, "a_t": 1, "z_2^t": z2_dim}, var_dict={"z_{t + 1}^1"})  # (26)
 
         self.initial_z2_dist = initial_z2_dist
         self.z2_dist = z2_dist
@@ -181,9 +265,7 @@ class SLAC:
     def __init__(self, action_dim=1):
         self.critic = QFunc(z1_dim=z1_dim, z2_dim=z2_dim, num_action=1, alpha=)
         self.critic_target = QFunc(z1_dim=z1_dim, z2_dim=z2_dim, num_action=1)
-        self.encoder = ConvEmbedder()
         self.actor = Actor(action_dim=action_dim)
-        self.optim_critic =
 
         self.log_alpha = torch.zeros(1, requires_grad=True, device=device)
         with torch.no_grad():
@@ -195,7 +277,7 @@ class SLAC:
         self.optim_alpha = Adam([self.log_alpha], lr=lr_sac)
         self.optim_latent = Adam(self.latent.parameters(), lr=lr_latent)
 
-    def update_critic(self, z, next_z, action, embedded_obs_next, reward, done):
+    def update_critic(self, z, next_z, action, encoded_obs_next, reward, done):
         q1, q2 = self.critic(z, action)
 
         with torch.no_grad():
@@ -207,3 +289,32 @@ class SLAC:
         self.optim_critic.zero_grad()
         loss.backward(retain_graph=False)
         self.optim_critic.step()
+
+    def update_actor(self, z, feature_action):
+        action, log_pi = self.actor.sample(feature_action)
+        loss_actor = -torch.mean(torch.min(q1, q2) - self.alpha * log_pi)
+
+        self.optim_actor.zero_grad()
+        loss_actor.backward(retain_graph=False)
+        self.optim_actor.step()
+
+        with torch.no_grad():
+            entropy = -log_pi.detach().mean()
+        loss_alpha = -self.log_alpha * (self.target_entropy - entropy)
+
+        self.optim_alpha.zero_grad()
+        loss_alpha.backward(retain_graph=False)
+        self.optim_alpha.step()
+        with torch.no_grad():
+            self.alpha = self.log_alpha.exp()
+
+    def update_latent(self):
+        self.learning_steps_latent += 1
+        state_, action_, reward_, done_ = self.buffer.sample_latent(
+            self.batch_size_latent)
+        loss_kld, loss_image, loss_reward = self.latent.calculate_loss(
+            state, action_, reward_, done_)
+
+        self.optim_latent.zero_grad()
+        (loss_kld + loss_image + loss_reward).backward()
+        self.optim_latent.step()
