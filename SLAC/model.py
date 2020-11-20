@@ -4,6 +4,9 @@ from torch.nn import functional as F
 from initializer import initialize_weight
 from pixyz.distributions import Normal
 from pixyz.losses import LogProb, KullbackLeibler
+
+from utils import soft_update, create_feature_actions
+
 z1_dim = 32
 z2_dim = 256
 encoded_obs_dim = 256
@@ -91,26 +94,27 @@ class Gaussian(Normal):
         return {"loc": loc, "scale": scale}
 
 
-
-
-class FixedGaussian(nn.Module):
+class FixedGaussian(Normal):
     """
     Fixed diagonal gaussian distribution.
     """
 
-    def __init__(self, output_dim, std):
-        super(FixedGaussian, self).__init__()
+    def __init__(self, var, output_dim, std):
+        super(FixedGaussian, self).__init__(var=var, cond_var=['x'])
         self.output_dim = output_dim
         self.std = std
 
     def forward(self, x):
-        mean = torch.zeros(x.size(0), self.output_dim, device=x.device)
-        std = torch.ones(x.size(0), self.output_dim, device=x.device).mul_(self.std)
-        return mean, std
+        loc = torch.zeros(x.size(0), self.output_dim, device=x.device)
+        scale = torch.ones(x.size(0), self.output_dim,
+
+                           device=x.device).mul_(self.std)
+        return loc, scale
 
     def sample(self, x):
         mean, std = self.forward(x)
         return mean + torch.rand_like(std) * std
+
 
 class QFunc(nn.Module):
     def __init__(self, z1_dim, z2_dim, num_action: int):
@@ -158,11 +162,14 @@ class Actor:
         self.pi = Pie(in_dim=num_seq*encoded_obs_dim +
                       (num_seq - 1)*action_dim)
 
-    def sample(self, inputs):
+    def sample(self, x_encoded):
         pi = self.pi.sample(x_encoded)["pi"]
         action = torch.Tanh(pi)
         log_prob = self.pi.dist.log_prob(action) + np.log(1 - action**2)
         return action, log_prob
+
+    def act_greedy(self, x_encoded):
+        return self.pi(x_encoded)['loc']
 
 
 class LatentModel:
@@ -170,7 +177,7 @@ class LatentModel:
         self.encoder = Encoder()
         self.decoder = Decoder()
         # p(z1(0))
-        self.z1_prior_init = FixedGaussian(z1_dim, 1.0)
+        self.z1_prior_init = FixedGaussian(['z1'], z1_dim, 1.0)
 
         # p(z2(0) | z1(0))
         self.z2_prior_init = Gaussian(
@@ -201,71 +208,77 @@ class LatentModel:
 
         self.apply(initialize_weight)
 
+        # KL Divergence
+        self.loss_kld_init = KullbackLeibler(
+            self.z1_posterior_init, self.z1_prior_init)
         self.loss_kld = KullbackLeibler(self.z1_posterior, self.z1_prior)
 
     def calculate_loss(self, state, action, reward, done):
         x_encoded = self.encoder(state)
-        z1, z2 = self.sample_posterior(x_encoded, action)
+        z1, z2, loss_kld = self.sample_posterior(x_encoded, action)
 
-        loss_kld = self.loss_kld.eval({'z_2^t': z2, 'a_t': action, "x_encoded": x_encoded})
-        loss_img = self.decoder.log_likelihood({'x_encoded': x_encoded, 'x_decoded': state})
-        reward_estimated = self.reward_dist.sample({"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action})
-        loss_reward = - self.reward_dist.log_likelihood({"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action})
+        loss_img = self.decoder.log_likelihood(
+            {'x_encoded': x_encoded, 'x_decoded': state})
+        reward_estimated = self.reward_dist.sample(
+            {"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action})
+        loss_reward = - self.reward_dist.log_likelihood(
+            {"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action})
 
         return loss_kld, loss_img, loss_reward
 
     def sample_posterior(self, x_encoded, action):
         z1_list = []
         z2_list = []
-        z1 = self.z1_posterior_init.sample({'x_encoded': x_encoded})
-        z2 = self.z2_posterior_init.sample({'z_1': z1})
+        # sampling from posterior dist
+        z1_pos = self.z1_posterior_init.sample({'x_encoded': x_encoded})
+        z2_pos = self.z2_posterior_init.sample({'z_1': z1})
 
-        z1_list.append(z1)
-        z2_list.append(z2)
+        # sampling from prior dist
+        z1_pri = self.z1_prior_init.sample({'x': action[:, 0]})
+        z2_pri = self.z2_prior_init.sample({'z_1': z1})
+
+        z1_pos_list.append(z1_pos)
+        z2_pos_list.append(z2_pos)
+
+        # calc KL Divergence
+        loss = self.loss_kld_init.eval(
+            {'x': action[:, 0], 'x_encoded': x_encoded})
 
         for t in range(1, action.size(1) + 1):
             # q(z1(t) | x_encoded(t), z2(t-1), a(t-1))
             z1 = self.z1_posterior.sample(
                 {'x_encoded': x_encoded[:, t],
-                 'z_2^t': z2,
+                 'z_2^t': z2_pos,
                  'a_t': action[:, t - 1]
-                   })
+                 })
             z2 = self.z2_posterior.sample(
-                {"z_{t + 1}^1": z1,
-                 "z_2^t": z2,
+                {"z_{t + 1}^1": z1_pos,
+                 "z_2^t": z2_pos,
                  "a_t": action[:, t - 1]
                  })
-            z1_list.append(z1)
-            z2_list.append(z2)
-        return torch.stack(z1_list, dim=1), torch.stack(z2_list, dim=1)
+            z1_pos_list.append(z1_pos)
+            z2_pos_list.append(z2_pos)
 
-    def sample_prior(self, action):
-        z1_list = []
-        z2_list = []
-        z1 = self.z1_prior_init.sample(action[:, 0])
-        z2 = self.z2_prior_init.sample({'z_1': z1})
+            # sampling from prior dist
+            z1_pri = self.z1_prior.sample(
+                {"z_2^t": z2_pri, "a_t": action[:, t - 1]})
+            z2_pri = self.z2_prior.sample(
+                {"z_{t + 1}^1": z1_pri, "z_2^t": z2_pri, "a_t": action[:, t - 1]})
 
+            # calc KL Divergence
+            loss += self.loss_kld.eval(
+                {"z_2^t": z2_pri, "a_t": action[:, t - 1], "z_{t + 1}^1": z1_pri})
 
-class VariationalModel:
-    def __init__(self, initial_z2_dist, z2_dist, z1_from_z2):
-        self.initial_z1_dist = Gaussian(
-            cond_var_dict={"x_encoded": encoded_obs_dim}, var_dict={"z_1": z1_dim})
-        self.z1_dist = Gaussian(
-            cond_var_dict={"x_encoded":  encoded_obs_dim, "z_1": z1_dim, "a_t": 1, "z_2^t": z2_dim}, var_dict={"z_{t + 1}^1"})  # (26)
-
-        self.initial_z2_dist = initial_z2_dist
-        self.z2_dist = z2_dist
-        self.decoder = Decoder()
-        self.loss =
-        - LogProb(Decoder) + \
-            KullbackLeibler(LogProb(self.z1_dist), LogProb(z1_from_z2))
+        return torch.stack(z1_pos_list, dim=1), torch.stack(z2_pos_list, dim=1), loss
 
 
 class SLAC:
-    def __init__(self, action_dim=1):
+    def __init__(self, action_dim=1, tau):
         self.critic = QFunc(z1_dim=z1_dim, z2_dim=z2_dim, num_action=1, alpha=)
         self.critic_target = QFunc(z1_dim=z1_dim, z2_dim=z2_dim, num_action=1)
         self.actor = Actor(action_dim=action_dim)
+        self.latent = LatentModel()
+        self.tau = tau
 
         self.log_alpha = torch.zeros(1, requires_grad=True, device=device)
         with torch.no_grad():
@@ -318,3 +331,63 @@ class SLAC:
         self.optim_latent.zero_grad()
         (loss_kld + loss_image + loss_reward).backward()
         self.optim_latent.step()
+
+    def update_sac(self):
+        state_, action_, reward, done = self.buffer.sample_sac(
+            self.batch_size_sac)
+        z, next_z, action, feature_action, next_feature_action = self.prepare_batch(
+            state_, action_)
+
+        self.update_critic(z, next_z, action,
+                           next_feature_action, reward, done, writer)
+        self.update_actor(z, feature_action, writer)
+        soft_update(self.critic_target, self.critic, self.tau)
+
+    def prapare_batch(self, state_, action_):
+        with torch.no_grad():
+            # f(1:t+1)
+            feature_ = self.latent.encoder(state_)
+            # z(1:t+1)
+            z_ = torch.cat(self.latent.sample_posterior(
+                feature_, action_)[2:], dim=-1)
+
+        # z(t), z(t+1)
+        z, next_z = z_[:, -2], z_[:, -1]
+        # a(t)
+        action = action_[:, -1]
+        # fa(t)=(x(1:t), a(1:t-1)), fa(t+1)=(x(2:t+1), a(2:t))
+        feature_action, next_feature_action = self.create_feature_actions(
+            feature_, action_)
+
+        return z, next_z, action, feature_action, next_feature_action
+
+    def step(self, env, obs, t, is_random):
+        t += 1
+        if is_random:
+            action = env.action_space.sample()
+        else:
+            action = self.explore(obs)
+
+        state, reward, done, _ = env.step(action)
+        mask = False if env._max_episode_steps else done
+        obs.append(state, action)
+        self.buffer.append(action, reward, mask, state, done)
+
+        if done:
+            t = 0
+            state = env.reset()
+            obs.reset_episode(state)
+            self.buffer.reset_episode(state)
+        return t
+
+    def explore(self, obs):
+        feature_action = self.preprocess(ob)
+        with torch.no_grad():
+            action = self.actor.sample(feature_action)[0]
+        return action.cpu().numpy()[0]
+
+    def exploit(self, obs):
+        feature_action = self.preprocess(obs)
+        with torch.no_grad():
+            action = self.actor.act_greedy(feature_action)
+        return action.cpu().numpy()[0]
