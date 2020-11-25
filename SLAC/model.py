@@ -1,11 +1,15 @@
 import torch
 from torch import nn
 from torch.nn import functional as F
-from initializer import initialize_weight
+from torch.optim import Adam
+
+import numpy as np
 from pixyz.distributions import Normal
 from pixyz.losses import LogProb, KullbackLeibler
 
 from utils import soft_update, create_feature_actions
+from initializer import initialize_weight
+from replay_buffer import ReplayBuffer
 
 z1_dim = 32
 z2_dim = 256
@@ -14,9 +18,9 @@ num_seq = 8
 
 
 class Encoder(nn.Module):
-    def __init__(self):
+    def __init__(self, input_dim=3, output_dim=encoded_obs_dim):
         """Convolutional network used for embeddings"""
-        super(ConvLayers, self).__init__()
+        super(Encoder, self).__init__()
         self.network = nn.Sequential(
             # (3, 64, 64) -> (32, 32, 32)
             nn.Conv2d(input_dim, 32, 5, 2, 2),
@@ -31,7 +35,7 @@ class Encoder(nn.Module):
             nn.Conv2d(128, 256, 3, 2, 1),
             nn.LeakyReLU(0.2, inplace=True),
             # (256, 4, 4) -> (256, 1, 1)
-            nn.Conv2d(256, 256, 4),
+            nn.Conv2d(256, output_dim, 4),
             nn.LeakyReLU(0.2, inplace=True),
         ).apply(initialize_weight)
 
@@ -40,9 +44,9 @@ class Encoder(nn.Module):
 
 
 class Decoder(Normal):
-    def __init__(self, std=0.1):
+    def __init__(self, input_dim=encoded_obs_dim, std=0.1):
         """Decodes z into an observation"""
-        super(TransitionConvLayer, self).__init__(
+        super().__init__(
             cond_var=['z1', 'z2'], var=['x_decoded'])
         self.network = nn.Sequential(
             # (32+256, 1, 1) -> (256, 4, 4)
@@ -73,12 +77,12 @@ class Gaussian(Normal):
     def __init__(self, cond_var_dict: dict, var_dict: dict):
         assert len(var_dict.keys()) == 1
         super(Gaussian, self).__init__(
-            cond_var=cond_var_dict.keys(), var=var_dict.keys()[0])
+            cond_var=list(cond_var_dict.keys()), var=list(var_dict.keys()))
         in_dim = sum(cond_var_dict.values())
         self.fcs = nn.Sequential(
             nn.Linear(in_dim, 256),
             nn.LeakyReLU(),
-            nn.Linear(256, var_dict.values()[0]*2)
+            nn.Linear(256, list(var_dict.values())[0]*2)
         )
         self.inputs = cond_var_dict.keys()
 
@@ -122,16 +126,16 @@ class QFunc(nn.Module):
         input_dim = z1_dim + z2_dim + num_action
         self.network1 = nn.Sequential(
             nn.Linear(input_dim, 256),
-            nn.Relu(),
+            nn.ReLU(),
             nn.Linear(256, 256),
-            nn.Relu(),
+            nn.ReLU(),
             nn.Linear(256, 1)
         )
         self.network2 = nn.Sequential(
             nn.Linear(input_dim, 256),
-            nn.Relu(),
+            nn.ReLU(),
             nn.Linear(256, 256),
-            nn.Relu(),
+            nn.ReLU(),
             nn.Linear(256, 1)
         )
 
@@ -142,7 +146,7 @@ class QFunc(nn.Module):
 
 class Pie(Normal):
     def __init__(self, in_dim, action_dim):
-        super(Actor, self).__init__(
+        super().__init__(
             cond_var=["x_encoded"], name='pi')  # convでembedされた系列ですが?
         self.fcs = nn.Sequential(
             nn.Linear(in_dim, 256),
@@ -158,9 +162,10 @@ class Pie(Normal):
 
 
 class Actor:
-    def __init__(self, action_dim):
+    def __init__(self, num_action):
+        # pi(a_t| x_{1:t}, a_{1:t-1})
         self.pi = Pie(in_dim=num_seq*encoded_obs_dim +
-                      (num_seq - 1)*action_dim)
+                      (num_seq - 1)*num_action, action_dim=num_action)
 
     def sample(self, x_encoded):
         pi = self.pi.sample(x_encoded)["pi"]
@@ -173,8 +178,8 @@ class Actor:
 
 
 class LatentModel:
-    def __init__(self):
-        self.encoder = Encoder()
+    def __init__(self, num_action, obs_shape):
+        self.encoder = Encoder(input_dim=obs_shape[0])
         self.decoder = Decoder()
         # p(z1(0))
         self.z1_prior_init = FixedGaussian(['z1'], z1_dim, 1.0)
@@ -185,15 +190,15 @@ class LatentModel:
 
         # p(z1(t + 1) | z2(t), a(t))
         self.z1_prior = Gaussian(cond_var_dict={
-            "z_2^t": z2_dim, "a_t": 1}, var_dict={"z_{t + 1}^1": z1_dim})
+            "z_2^t": z2_dim, "a_t": num_action}, var_dict={"z_{t + 1}^1": z1_dim})
 
         # p(z2(t+1) | z1(t+1), z2(t), a(t))
         self.z2_prior = Gaussian(cond_var_dict={
-            "z_{t + 1}^1": z1_dim, "z_2^t": z2_dim, "a_t": 1}, var_dict={"z_{t + 1}^2": z2_dim})
+            "z_{t + 1}^1": z1_dim, "z_2^t": z2_dim, "a_t": num_action}, var_dict={"z_{t + 1}^2": z2_dim})
 
         # p(r(t) | z1(t), z2(t), a(t), z1(t+1), z2(t+1))
         self.reward_dist = Gaussian(cond_var_dict={
-                                    "z_1^t": z1_dim, "z_2^t": z2_dim, "z_{t + 1}^1": z1_dim, "z_{t + 1}^2": z2_dim, "a_t": 1}, var_dict={"r_t": 1})
+                                    "z_1^t": z1_dim, "z_2^t": z2_dim, "z_{t + 1}^1": z1_dim, "z_{t + 1}^2": z2_dim, "a_t": num_action}, var_dict={"r_t": 1})
 
         # q(z1(0) | x1_encoded(0))
         self.z1_posterior_init = Gaussian(
@@ -201,17 +206,23 @@ class LatentModel:
 
         # q(z1(t+1) | x_encoded(t+1), z2(t), a(t))
         self.z1_posterior = Gaussian(
-            cond_var_dict={"x_encoded": encoded_obs_dim, "a_t": 1, "z_2^t": z2_dim}, var_dict={"z_{t + 1}^1": z1_dim})
+            cond_var_dict={"x_encoded": encoded_obs_dim, "a_t": num_action, "z_2^t": z2_dim}, var_dict={"z_{t + 1}^1": z1_dim})
 
         self.z2_posterior_init = self.z2_prior_init
         self.z2_posterior = self.z2_prior
 
-        self.apply(initialize_weight)
+        # self.apply(initialize_weight)
 
         # KL Divergence
         self.loss_kld_init = KullbackLeibler(
             self.z1_posterior_init, self.z1_prior_init)
         self.loss_kld = KullbackLeibler(self.z1_posterior, self.z1_prior)
+
+        distributions = [self.z1_prior_init, self.z2_prior_init, self.z1_prior, self.z2_prior,
+                         self.reward_dist, self.z1_posterior_init, self.z1_posterior_init,
+                         self.z1_posterior, self.z2_posterior_init, self.z2_posterior]
+        self.parameters = nn.ModuleList(distributions).parameters()
+        initialize_weight(self.parameters)
 
     def calculate_loss(self, state, action, reward, done):
         x_encoded = self.encoder(state)
@@ -273,11 +284,31 @@ class LatentModel:
 
 
 class SLAC:
-    def __init__(self, action_dim=1, tau):
-        self.critic = QFunc(z1_dim=z1_dim, z2_dim=z2_dim, num_action=1, alpha=)
+    def __init__(self,
+                 obs_shape,
+                 action_shape,
+                 device,
+                 seed,
+                 gamma=0.99,
+                 batch_size_sac=256,
+                 batch_size_latent=32,
+                 buffer_size=10 ** 5,
+                 num_sequences=8,
+                 lr_sac=3e-4,
+                 lr_latent=1e-4,
+                 tau=5e-3):
+        self.batch_size_latent = batch_size_latent
+        self.batch_size_sac = batch_size_sac
+        np.random.seed(seed)
+        torch.manual_seed(seed)
+        torch.cuda.manual_seed(seed)
+
+        self.critic = QFunc(z1_dim=z1_dim, z2_dim=z2_dim,
+                            num_action=action_shape[0])  # TODO: configure alpha and tau
         self.critic_target = QFunc(z1_dim=z1_dim, z2_dim=z2_dim, num_action=1)
-        self.actor = Actor(action_dim=action_dim)
-        self.latent = LatentModel()
+        self.actor = Actor(num_action=action_shape[0])
+        self.latent = LatentModel(
+            num_action=action_shape[0], obs_shape=obs_shape)
         self.tau = tau
 
         self.log_alpha = torch.zeros(1, requires_grad=True, device=device)
@@ -285,10 +316,14 @@ class SLAC:
             self.alpha = self.log_alpha.exp()
 
         # Optimizers.
-        self.optim_actor = Adam(self.actor.parameters(), lr=lr_sac)
+        self.optim_actor = Adam(self.actor.pi.parameters(), lr=lr_sac)
         self.optim_critic = Adam(self.critic.parameters(), lr=lr_sac)
         self.optim_alpha = Adam([self.log_alpha], lr=lr_sac)
-        self.optim_latent = Adam(self.latent.parameters(), lr=lr_latent)
+        self.optim_latent = Adam(self.latent.parameters, lr=lr_latent)
+
+        self.buffer = ReplayBuffer(
+            buffer_size, num_sequences, obs_shape, action_shape, device)
+        self.learning_steps_latent = 0
 
     def update_critic(self, z, next_z, action, encoded_obs_next, reward, done):
         q1, q2 = self.critic(z, action)
@@ -326,7 +361,7 @@ class SLAC:
         state_, action_, reward_, done_ = self.buffer.sample_latent(
             self.batch_size_latent)
         loss_kld, loss_image, loss_reward = self.latent.calculate_loss(
-            state, action_, reward_, done_)
+            state_, action_, reward_, done_)
 
         self.optim_latent.zero_grad()
         (loss_kld + loss_image + loss_reward).backward()
@@ -369,7 +404,7 @@ class SLAC:
             action = self.explore(obs)
 
         state, reward, done, _ = env.step(action)
-        mask = False if env._max_episode_steps else done
+        mask = False if t == env._max_episode_steps else done
         obs.append(state, action)
         self.buffer.append(action, reward, mask, state, done)
 

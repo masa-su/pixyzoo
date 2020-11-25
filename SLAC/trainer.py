@@ -4,7 +4,7 @@ from datetime import timedelta
 from time import sleep, time
 
 import numpy as np
-from torch.utils.tensorboard import SummaryWriter
+from tensorboardX import SummaryWriter
 from tqdm import tqdm
 
 
@@ -112,7 +112,7 @@ class Trainer:
         bar = tqdm(range(self.initial_learning_steps))
         for _ in bar:
             bar.set_description("Updating latent variable model.")
-            self.algo.update_latent(self.writer)
+            self.algo.update_latent()  #TODO: add self.writer to the arg
 
         # Iterate collection, update and evaluation.
         for step in range(self.initial_collection_steps + 1, self.num_steps // self.action_repeat + 1):

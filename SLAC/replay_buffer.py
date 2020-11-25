@@ -17,24 +17,27 @@ class LazyFrames:
     def __len__(self):
         return len(self._frames)
 
-class SequentialBuffer():
+
+class SequenceBuffer():
     def __init__(self, capacity=8):
         self.capacity = capacity
         self.clear()
         self._reset_episode = False
 
     def clear(self):
+        self._reset_episode = False
         self.length = 0
-        self.state = deque(maxlen=self.capacity + 1)
-        self.action = deque(maxlen=self.capacity)
-        self.reward = deque(maxlen=self.capacity)
-        self.done = deque(maxlen=self.capacity)
+        self.state_ = deque(maxlen=self.capacity + 1)
+        self.action_ = deque(maxlen=self.capacity)
+        self.reward_ = deque(maxlen=self.capacity)
+        self.done_ = deque(maxlen=self.capacity)
 
     def push(self, action, reward, done, next_state):
-        self.state.append(next_state)
-        self.action.append(action)
-        self.reward.append([reward])
-        self.done.append([done])
+        assert self._reset_episode
+        self.state_.append(next_state)
+        self.action_.append(action)
+        self.reward_.append([reward])
+        self.done_.append([done])
         self.length += 1
 
     def get(self):
@@ -82,7 +85,7 @@ class ReplayBuffer:
             buffer_size, num_sequences, 1, device=device)
         self.done_ = torch.empty(buffer_size, num_sequences, 1, device=device)
         # Buffer to store a sequence of trajectories.
-        self.buff = SequenceBuffer(num_sequences=num_sequences)
+        self.buff = SequenceBuffer(capacity=num_sequences)
 
     def reset_episode(self, state):
         """
@@ -95,14 +98,14 @@ class ReplayBuffer:
         Store trajectory in the buffer. If the buffer is full, the sequence of trajectories is stored in replay buffer.
         Please pass 'masked' and 'true' done so that we can assert if the start/end of an episode is handled properly.
         """
-        self.buff.append(action, reward, done, next_state)
+        self.buff.push(action, reward, done, next_state)
 
         if self.buff.is_full():
             state_, action_, reward_, done_ = self.buff.get()
             self._append(state_, action_, reward_, done_)
 
         if episode_done:
-            self.buff.reset()
+            self.buff.clear()
 
     def _append(self, state_, action_, reward_, done_):
         self.state_[self._p] = state_
