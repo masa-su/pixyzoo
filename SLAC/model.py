@@ -13,11 +13,12 @@ from replay_buffer import ReplayBuffer
 
 z1_dim = 32
 z2_dim = 256
+z_dim = z1_dim + z2_dim
 encoded_obs_dim = 256
 num_seq = 8
 
 
-class Encoder(nn.Module):
+class Encoder(torch.jit.ScriptModule):
     def __init__(self, input_dim=3, output_dim=encoded_obs_dim):
         """Convolutional network used for embeddings"""
         super(Encoder, self).__init__()
@@ -39,15 +40,20 @@ class Encoder(nn.Module):
             nn.LeakyReLU(0.2, inplace=True),
         ).apply(initialize_weight)
 
-    def forward(self, inputs):
-        return self.network(inputs)
+    @torch.jit.script_method
+    def forward(self, x):
+        B, S, C, H, W = x.size()
+        x = x.view(B * S, C, H, W)
+        x = self.network(x)
+        x = x.view(B, S, -1)
+        return x
 
 
 class Decoder(Normal):
-    def __init__(self, input_dim=encoded_obs_dim, std=0.1):
+    def __init__(self, input_dim=z_dim, std=0.1):
         """Decodes z into an observation"""
         super().__init__(
-            cond_var=['z1', 'z2'], var=['x_decoded'])
+            cond_var=['z_1', 'z_2'], var=['x_decoded'])
         self.network = nn.Sequential(
             # (32+256, 1, 1) -> (256, 4, 4)
             nn.ConvTranspose2d(input_dim, 256, 4),
@@ -67,9 +73,13 @@ class Decoder(Normal):
         ).apply(initialize_weight)
         self.std = std
 
-    def forward(self, z1, z2):
-        loc = self.network(inputs)
-        scale = torch.ones_like(inputs).mul_(self.std)
+    def forward(self, z_1, z_2):
+        z = torch.cat([z_1, z_2], dim=-1)
+        B, S, latent_dim = z.size()
+        assert latent_dim == z1_dim + z2_dim
+        z = z.view(B*S, latent_dim, 1, 1)
+        loc = self.network(z)
+        scale = torch.ones_like(loc).mul_(self.std)
         return {"loc": loc, "scale": scale}
 
 
@@ -94,7 +104,7 @@ class Gaussian(Normal):
         x = torch.cat(x, dim=-1)
         x = self.fcs(x)
         loc, scale = torch.chunk(x, 2, dim=-1)
-        scale = F.softplus(std) + 1e-5
+        scale = F.softplus(scale) + 1e-5
         return {"loc": loc, "scale": scale}
 
 
@@ -111,14 +121,8 @@ class FixedGaussian(Normal):
     def forward(self, x):
         loc = torch.zeros(x.size(0), self.output_dim, device=x.device)
         scale = torch.ones(x.size(0), self.output_dim,
-
                            device=x.device).mul_(self.std)
-        return loc, scale
-
-    def sample(self, x):
-        mean, std = self.forward(x)
-        return mean + torch.rand_like(std) * std
-
+        return {'loc': loc, 'scale': scale}
 
 class QFunc(nn.Module):
     def __init__(self, z1_dim, z2_dim, num_action: int):
@@ -182,7 +186,7 @@ class LatentModel:
         self.encoder = Encoder(input_dim=obs_shape[0])
         self.decoder = Decoder()
         # p(z1(0))
-        self.z1_prior_init = FixedGaussian(['z1'], z1_dim, 1.0)
+        self.z1_prior_init = FixedGaussian(['z_1'], z1_dim, 1.0)
 
         # p(z2(0) | z1(0))
         self.z2_prior_init = Gaussian(
@@ -228,32 +232,35 @@ class LatentModel:
         x_encoded = self.encoder(state)
         z1, z2, loss_kld = self.sample_posterior(x_encoded, action)
 
-        loss_img = self.decoder.log_likelihood(
-            {'x_encoded': x_encoded, 'x_decoded': state})
-        reward_estimated = self.reward_dist.sample(
-            {"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action})
-        loss_reward = - self.reward_dist.log_likelihood(
-            {"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action})
+        x_decoded = self.decoder.sample({'z_1': z1, 'z_2': z2})['x_decoded']
+        loss_img = self.decoder.get_log_prob(
+            {'z_1': z1, 'z_2': z2, 'x_decoded': x_decoded})
+        r_t_estimated = self.reward_dist.sample(
+            {"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action})['r_t']
+        loss_reward = - self.reward_dist.get_log_prob(
+            {"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action, 'r_t': r_t_estimated})
 
-        return loss_kld, loss_img, loss_reward
+        return loss_kld.sum(), loss_img.sum(), loss_reward.sum()
 
     def sample_posterior(self, x_encoded, action):
-        z1_list = []
-        z2_list = []
+        z1_pos_list = []
+        z2_pos_list = []
+
         # sampling from posterior dist
-        z1_pos = self.z1_posterior_init.sample({'x_encoded': x_encoded})
-        z2_pos = self.z2_posterior_init.sample({'z_1': z1})
+        z1_pos = self.z1_posterior_init.sample(
+            {'x_encoded': x_encoded[:, 0]})['z_1']
+        z2_pos = self.z2_posterior_init.sample({'z_1': z1_pos})['z_2']
 
         # sampling from prior dist
-        z1_pri = self.z1_prior_init.sample({'x': action[:, 0]})
-        z2_pri = self.z2_prior_init.sample({'z_1': z1})
+        z1_pri = self.z1_prior_init.sample({'x': action[:, 0]})['z_1']
+        z2_pri = self.z2_prior_init.sample({'z_1': z1_pri})['z_2']
 
         z1_pos_list.append(z1_pos)
         z2_pos_list.append(z2_pos)
 
         # calc KL Divergence
         loss = self.loss_kld_init.eval(
-            {'x': action[:, 0], 'x_encoded': x_encoded})
+            {'x': action[:, 0], 'x_encoded': x_encoded[:, 0]})
 
         for t in range(1, action.size(1) + 1):
             # q(z1(t) | x_encoded(t), z2(t-1), a(t-1))
@@ -261,24 +268,24 @@ class LatentModel:
                 {'x_encoded': x_encoded[:, t],
                  'z_2^t': z2_pos,
                  'a_t': action[:, t - 1]
-                 })
+                 })["z_{t + 1}^1"]
             z2 = self.z2_posterior.sample(
                 {"z_{t + 1}^1": z1_pos,
                  "z_2^t": z2_pos,
                  "a_t": action[:, t - 1]
-                 })
+                 })["z_{t + 1}^2"]
             z1_pos_list.append(z1_pos)
             z2_pos_list.append(z2_pos)
 
             # sampling from prior dist
             z1_pri = self.z1_prior.sample(
-                {"z_2^t": z2_pri, "a_t": action[:, t - 1]})
+                {"z_2^t": z2_pri, "a_t": action[:, t - 1]})["z_{t + 1}^1"]
             z2_pri = self.z2_prior.sample(
-                {"z_{t + 1}^1": z1_pri, "z_2^t": z2_pri, "a_t": action[:, t - 1]})
+                {"z_{t + 1}^1": z1_pri, "z_2^t": z2_pri, "a_t": action[:, t - 1]})["z_{t + 1}^2"]
 
             # calc KL Divergence
             loss += self.loss_kld.eval(
-                {"z_2^t": z2_pri, "a_t": action[:, t - 1], "z_{t + 1}^1": z1_pri})
+                {"z_2^t": z2_pri, "a_t": action[:, t - 1], "x_encoded": x_encoded[:, t]})
 
         return torch.stack(z1_pos_list, dim=1), torch.stack(z2_pos_list, dim=1), loss
 
