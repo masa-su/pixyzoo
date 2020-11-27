@@ -10,12 +10,13 @@ from pixyz.losses import LogProb, KullbackLeibler
 from utils import soft_update, create_feature_actions
 from initializer import initialize_weight
 from replay_buffer import ReplayBuffer
+from config import SLAC_config, LOG_INTERVAL
 
-z1_dim = 32
-z2_dim = 256
+z1_dim = SLAC_config['z1_dim']
+z2_dim = SLAC_config['z2_dim']
 z_dim = z1_dim + z2_dim
 encoded_obs_dim = 256
-num_seq = 8
+num_seq = SLAC_config['num_sequences']
 
 
 class Encoder(torch.jit.ScriptModule):
@@ -143,25 +144,23 @@ class QFunc(nn.Module):
             nn.Linear(256, 1)
         )
 
-    def forward(self, z1, z2, action_t_1):
-        inputs = torch.cat([z1, z2, action_t_1])
+    def forward(self, z, action_t_1):
+        inputs = torch.cat([z, action_t_1], dim=1)
         return self.network1(inputs), self.network2(inputs)
 
 
 class Pie(Normal):
     def __init__(self, in_dim, action_dim):
         super().__init__(
-            cond_var=["x_encoded"], name='pi')  # convでembedされた系列ですが?
+            cond_var=["obs_and_action"], var=['pi'])
         self.fcs = nn.Sequential(
             nn.Linear(in_dim, 256),
             nn.LeakyReLU(),
             nn.Linear(256, 2*action_dim)
         )
 
-    def forward(self, x_encoded):
-        loc, scale = torch.chunk(self.fcs(encoded_obs), 2, dim=-1)
-        self.loc = loc
-        self.scale = self.scale
+    def forward(self, obs_and_action):
+        loc, scale = torch.chunk(self.fcs(obs_and_action), 2, dim=-1)
         return {"loc": loc, "scale": scale}
 
 
@@ -172,9 +171,12 @@ class Actor:
                       (num_seq - 1)*num_action, action_dim=num_action)
 
     def sample(self, x_encoded):
-        pi = self.pi.sample(x_encoded)["pi"]
-        action = torch.Tanh(pi)
-        log_prob = self.pi.dist.log_prob(action) + np.log(1 - action**2)
+        pi = self.pi.sample({'obs_and_action': x_encoded})["pi"]
+        action = torch.tanh(pi)
+        # log_prob = self.pi.dist.log_prob(action) + np.log(1 - action**2)
+        log_prob = self.pi.get_log_prob(
+            {'obs_and_action': x_encoded, 'pi': pi})
+        log_prob += np.log(1 - action**2)
         return action, log_prob
 
     def act_greedy(self, x_encoded):
@@ -312,12 +314,15 @@ class SLAC:
 
         self.critic = QFunc(z1_dim=z1_dim, z2_dim=z2_dim,
                             num_action=action_shape[0])  # TODO: configure alpha and tau
-        self.critic_target = QFunc(z1_dim=z1_dim, z2_dim=z2_dim, num_action=1)
+        self.critic_target = QFunc(
+            z1_dim=z1_dim, z2_dim=z2_dim, num_action=action_shape[0])
         self.actor = Actor(num_action=action_shape[0])
         self.latent = LatentModel(
             num_action=action_shape[0], obs_shape=obs_shape)
         self.tau = tau
-
+        self.gamma = gamma
+        self.device = device
+        self.target_entropy = -float(action_shape[0])
         self.log_alpha = torch.zeros(1, requires_grad=True, device=device)
         with torch.no_grad():
             self.alpha = self.log_alpha.exp()
@@ -331,13 +336,14 @@ class SLAC:
         self.buffer = ReplayBuffer(
             buffer_size, num_sequences, obs_shape, action_shape, device)
         self.learning_steps_latent = 0
+        self.learning_steps_sac = 0
 
-    def update_critic(self, z, next_z, action, encoded_obs_next, reward, done):
+    def update_critic(self, z, next_z, action, feature_action, reward, done, writer):
         q1, q2 = self.critic(z, action)
 
         with torch.no_grad():
-            action, log_prob = self.actor.sample(inputs)
-            q1_next, q2_next = self.critic_target(next_z)
+            next_action, log_prob = self.actor.sample(feature_action)
+            q1_next, q2_next = self.critic_target(next_z, next_action)
             q_next = torch.min(q1_next, q2_next) - self.alpha * log_prob
         target_q = reward + (1.0 - done) * self.gamma * q_next
         loss = (q1 - target_q).pow_(2).mean() + (q2 - target_q).pow_(2).mean()
@@ -345,8 +351,12 @@ class SLAC:
         loss.backward(retain_graph=False)
         self.optim_critic.step()
 
-    def update_actor(self, z, feature_action):
+        if self.learning_steps_sac % LOG_INTERVAL == 0:
+            writer.add_scalar('loss/critic', loss, self.learning_steps_sac)
+
+    def update_actor(self, z, feature_action, writer):
         action, log_pi = self.actor.sample(feature_action)
+        q1, q2 = self.critic(z, action)
         loss_actor = -torch.mean(torch.min(q1, q2) - self.alpha * log_pi)
 
         self.optim_actor.zero_grad()
@@ -363,7 +373,17 @@ class SLAC:
         with torch.no_grad():
             self.alpha = self.log_alpha.exp()
 
-    def update_latent(self):
+        if self.learning_steps_sac % LOG_INTERVAL == 0:
+            writer.add_scalar("loss/actor", loss_actor.item(),
+                              self.learning_steps_sac)
+            writer.add_scalar("loss/alpha", loss_alpha.item(),
+                              self.learning_steps_sac)
+            writer.add_scalar("stats/alpha", self.alpha.item(),
+                              self.learning_steps_sac)
+            writer.add_scalar("stats/entropy", entropy.item(),
+                              self.learning_steps_sac)
+
+    def update_latent(self, writer):
         self.learning_steps_latent += 1
         state_, action_, reward_, done_ = self.buffer.sample_latent(
             self.batch_size_latent)
@@ -374,7 +394,16 @@ class SLAC:
         (loss_kld + loss_image + loss_reward).backward()
         self.optim_latent.step()
 
-    def update_sac(self):
+        if self.learning_steps_latent % LOG_INTERVAL == 0:
+            writer.add_scalar("loss/kld", loss_kld.item(),
+                              self.learning_steps_latent)
+            writer.add_scalar("loss/loss_image", loss_image.item(),
+                              self.learning_steps_latent)
+            writer.add_scalar("loss/loss_reward", loss_reward.item(),
+                              self.learning_steps_latent)
+
+    def update_sac(self, writer):
+        self.learning_steps_sac += 1
         state_, action_, reward, done = self.buffer.sample_sac(
             self.batch_size_sac)
         z, next_z, action, feature_action, next_feature_action = self.prepare_batch(
@@ -385,23 +414,32 @@ class SLAC:
         self.update_actor(z, feature_action, writer)
         soft_update(self.critic_target, self.critic, self.tau)
 
-    def prapare_batch(self, state_, action_):
+    def prepare_batch(self, state_, action_):
         with torch.no_grad():
             # f(1:t+1)
             feature_ = self.latent.encoder(state_)
             # z(1:t+1)
             z_ = torch.cat(self.latent.sample_posterior(
-                feature_, action_)[2:], dim=-1)
+                feature_, action_)[:-1], dim=-1)
 
         # z(t), z(t+1)
         z, next_z = z_[:, -2], z_[:, -1]
         # a(t)
         action = action_[:, -1]
         # fa(t)=(x(1:t), a(1:t-1)), fa(t+1)=(x(2:t+1), a(2:t))
-        feature_action, next_feature_action = self.create_feature_actions(
+        feature_action, next_feature_action = create_feature_actions(
             feature_, action_)
 
         return z, next_z, action, feature_action, next_feature_action
+
+    def preprocess(self, ob):
+        state = torch.tensor(ob.state, dtype=torch.uint8,
+                             device=self.device).float().div_(255.0)
+        with torch.no_grad():
+            feature = self.latent.encoder(state).view(1, -1)
+        action = torch.tensor(ob.action, dtype=torch.float, device=self.device)
+        feature_action = torch.cat([feature, action], dim=1)
+        return feature_action
 
     def step(self, env, obs, t, is_random):
         t += 1
@@ -410,6 +448,7 @@ class SLAC:
         else:
             action = self.explore(obs)
 
+        assert not np.any(np.isnan(action)), 'Action should not be None'
         state, reward, done, _ = env.step(action)
         mask = False if t == env._max_episode_steps else done
         obs.append(state, action)
@@ -423,7 +462,7 @@ class SLAC:
         return t
 
     def explore(self, obs):
-        feature_action = self.preprocess(ob)
+        feature_action = self.preprocess(obs)
         with torch.no_grad():
             action = self.actor.sample(feature_action)[0]
         return action.cpu().numpy()[0]

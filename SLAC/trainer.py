@@ -109,13 +109,16 @@ class Trainer:
                                self.initial_collection_steps)
 
         # Update latent variable model first so that SLAC can learn well using (learned) latent dynamics.
-        bar = tqdm(range(self.initial_learning_steps))
-        for _ in bar:
-            bar.set_description("Updating latent variable model.")
-            self.algo.update_latent()  #TODO: add self.writer to the arg
+        bar_latent = tqdm(range(self.initial_learning_steps))
+        for _ in bar_latent:
+            bar_latent.set_description("Updating latent variable model.")
+            self.algo.update_latent(self.writer)
 
         # Iterate collection, update and evaluation.
-        for step in range(self.initial_collection_steps + 1, self.num_steps // self.action_repeat + 1):
+        bar_actor = tqdm(range(self.initial_collection_steps + 1,
+                               self.num_steps // self.action_repeat + 1))
+        for step in bar_actor:
+            bar_actor.set_description("Updating the actor and critic.")
             t = self.algo.step(self.env, self.ob, t, False)
 
             # Update the algorithm.

@@ -1,3 +1,4 @@
+import torch
 def create_feature_actions(feature_, action_):
     N = feature_.size(0)
     # Flatten sequence of features.

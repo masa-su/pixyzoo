@@ -2,9 +2,9 @@ import gym
 from trainer import Trainer
 from model import SLAC
 import argparse
-import yaml
 from mockenv import MockEnv
 import torch
+from config import Trainer_config, SLAC_config
 # from env import make_dmc
 
 
@@ -15,32 +15,35 @@ def main(args):
                            action_shape=(6, ), dtype="uint8")
 
     else:
+        from env import make_dmc
         env = make_dmc(
-            domain_name=args.domain_name,
+            domain_name=args.env,
             task_name=args.task_name,
             action_repeat=args.action_repeat,
             image_size=64,
         )
         env_test = make_dmc(
-            domain_name=args.domain_name,
+            domain_name=args.env,
             task_name=args.task_name,
             action_repeat=args.action_repeat,
             image_size=64,
         )
 
-    with open('config.yml', 'r') as yml:
-        config = yaml.load(yml)
-
-    slac_conf = config['SLAC']
     slac = SLAC(
         obs_shape=env.observation_space.shape,
         action_shape=env.action_space.shape,
-        tau=slac_conf['tau'],
         device=torch.device("cuda" if args.cuda else "cpu"),
-        seed=args.seed
+        seed=args.seed,
+        gamma=SLAC_config['gamma'],
+        batch_size_sac=SLAC_config['batch_size_sac'],
+        batch_size_latent=SLAC_config['batch_size_latent'],
+        buffer_size=SLAC_config['buffer_size'],
+        num_sequences=SLAC_config['num_sequences'],
+        lr_sac=SLAC_config['lr_sac'],
+        lr_latent=SLAC_config['lr_latent'],
+        tau=SLAC_config['tau'],
     )
 
-    trainer_conf = config['Trainer']
     trainer = Trainer(
         env=env,
         env_test=env_test,
@@ -48,11 +51,11 @@ def main(args):
         log_dir=args.log_dir,
         seed=args.seed,
         num_steps=args.num_steps,
-        initial_collection_steps=trainer_conf['initial_collection_steps'],
-        initial_learning_steps=trainer_conf['initial_learning_steps'],
-        num_sequences=trainer_conf['num_sequences'],
-        eval_interval=trainer_conf['eval_interval'],
-        num_eval_episodes=trainer_conf['num_eval_episodes'])
+        initial_collection_steps=Trainer_config['initial_collection_steps'],
+        initial_learning_steps=Trainer_config['initial_learning_steps'],
+        num_sequences=Trainer_config['num_sequences'],
+        eval_interval=Trainer_config['eval_interval'],
+        num_eval_episodes=Trainer_config['num_eval_episodes'])
 
     trainer.train()
 
