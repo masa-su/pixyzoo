@@ -160,7 +160,8 @@ class Pie(Normal):
         )
 
     def forward(self, obs_and_action):
-        loc, scale = torch.chunk(self.fcs(obs_and_action), 2, dim=-1)
+        loc, log_scale = torch.chunk(self.fcs(obs_and_action), 2, dim=-1)
+        scale = torch.exp(log_scale.clamp_(-20, 2))
         return {"loc": loc, "scale": scale}
 
 
@@ -175,8 +176,9 @@ class Actor:
         action = torch.tanh(pi)
         # log_prob = self.pi.dist.log_prob(action) + np.log(1 - action**2)
         log_prob = self.pi.get_log_prob(
-            {'obs_and_action': x_encoded, 'pi': pi})
-        log_prob += np.log(1 - action**2)
+            {'obs_and_action': x_encoded, 'pi': pi}).reshape([-1, 1])
+
+        log_prob += np.log(1 - action.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
         return action, log_prob
 
     def act_greedy(self, x_encoded):

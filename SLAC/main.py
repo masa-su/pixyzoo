@@ -5,8 +5,6 @@ import argparse
 from mockenv import MockEnv
 import torch
 from config import Trainer_config, SLAC_config
-# from env import make_dmc
-
 
 def main(args):
     if args.debug:
