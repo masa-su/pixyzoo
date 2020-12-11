@@ -161,7 +161,7 @@ class Pie(Normal):
 
     def forward(self, obs_and_action):
         loc, log_scale = torch.chunk(self.fcs(obs_and_action), 2, dim=-1)
-        scale = torch.exp(log_scale.clamp_(-20, 2))
+        scale = torch.exp(log_scale.clamp(-20, 2))
         return {"loc": loc, "scale": scale}
 
 
