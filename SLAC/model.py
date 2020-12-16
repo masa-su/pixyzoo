@@ -182,7 +182,7 @@ class Actor:
         return action, log_prob
 
     def act_greedy(self, x_encoded):
-        return self.pi(x_encoded)['loc']
+        return torch.tanh(self.pi(x_encoded)['loc'])
 
 
 class LatentModel:
