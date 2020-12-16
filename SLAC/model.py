@@ -294,7 +294,7 @@ class LatentModel:
         return torch.stack(z1_pos_list, dim=1), torch.stack(z2_pos_list, dim=1), loss
 
 
-class SLAC:
+class SLAC(nn.Module):
     def __init__(self,
                  obs_shape,
                  action_shape,
@@ -308,6 +308,7 @@ class SLAC:
                  lr_sac=3e-4,
                  lr_latent=1e-4,
                  tau=5e-3):
+        super(SLAC, self).__init__()
         self.batch_size_latent = batch_size_latent
         self.batch_size_sac = batch_size_sac
         np.random.seed(seed)
@@ -474,3 +475,6 @@ class SLAC:
         with torch.no_grad():
             action = self.actor.act_greedy(feature_action)
         return action.cpu().numpy()[0]
+
+    def save_model(self, path):
+        torch.save(self.state_dict(), path)
