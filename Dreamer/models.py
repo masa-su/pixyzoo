@@ -12,14 +12,26 @@ from pixyz.distributions import Normal
 
 
 # Wraps the input tuple for a function to process a (time, batch, features sequence in batch, features) (assumes one output)
-def bottle(f, x_tuple):
+def bottle(f, x_dict):
+    """
+    x_dict: {"Name of the variable": variable}
+    """
+    assert len(x_dict) >= 1
+    # x_tuple: (T, B, features...)
     x_sizes = tuple(map(lambda x: x.size(), x_tuple))
+    # apply neural network
     y = f(*map(lambda x: x[0].view(x[1][0] * x[1]
                                    [1], *x[1][2:]), zip(x_tuple, x_sizes)))
+    # (T * B, features...)にしてからネットワークに食わせる(x.view(x_size[0] * x_size[1], * x_size[2:]))
+    # x_tupleの中身はconcatしていない
+    feed_dict = {}
+    for name, tensor in x_dict.items():
+        T, B, feature_dims = tensor.size()[0], tensor.size[1], tensor.size[2:]
+        feed_dict[name] = tensor.view(T*B, *feature_dims)
+    y = f(feed_dict)
     y_size = y.size()
-    output = y.view(x_sizes[0][0], x_sizes[0][1], *y_size[1:])
+    output = y.view(T, B, *y_size[1:])
     return output
-
 
 class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
     __constants__ = ['min_std_dev']
