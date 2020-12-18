@@ -80,6 +80,8 @@ class Decoder(Normal):
         assert latent_dim == z1_dim + z2_dim
         z = z.view(B*S, latent_dim, 1, 1)
         loc = self.network(z)
+        _, C, H, W = loc.size()
+        loc = loc.view(B, S, C, H, W)
         scale = torch.ones_like(loc).mul_(self.std)
         return {"loc": loc, "scale": scale}
 
@@ -238,12 +240,10 @@ class LatentModel:
 
         x_decoded = self.decoder.sample({'z_1': z1, 'z_2': z2})['x_decoded']
         loss_img = self.decoder.get_log_prob(
-            {'z_1': z1, 'z_2': z2, 'x_decoded': x_decoded})
-        r_t_estimated = self.reward_dist.sample(
-            {"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action})['r_t']
+            {'z_1': z1, 'z_2': z2, 'x_decoded': state}, sum_features=False)
         loss_reward = - self.reward_dist.get_log_prob(
-            {"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action, 'r_t': r_t_estimated})
-
+            {"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action, 'r_t': reward}, sum_features=False)
+        loss_reward = loss_reward.mul_(1 - done).mean(dim=0).sum()
         return loss_kld.sum(), loss_img.sum(), loss_reward.sum()
 
     def sample_posterior(self, x_encoded, action):
