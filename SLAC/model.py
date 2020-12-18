@@ -19,7 +19,7 @@ encoded_obs_dim = 256
 num_seq = SLAC_config['num_sequences']
 
 
-class Encoder(torch.jit.ScriptModule):
+class Encoder(nn.Module):
     def __init__(self, input_dim=3, output_dim=encoded_obs_dim):
         """Convolutional network used for embeddings"""
         super(Encoder, self).__init__()
@@ -41,7 +41,6 @@ class Encoder(torch.jit.ScriptModule):
             nn.LeakyReLU(0.2, inplace=True),
         ).apply(initialize_weight)
 
-    @torch.jit.script_method
     def forward(self, x):
         B, S, C, H, W = x.size()
         x = x.view(B * S, C, H, W)
