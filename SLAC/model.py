@@ -238,7 +238,6 @@ class LatentModel:
         x_encoded = self.encoder(state)
         z1, z2, loss_kld = self.sample_posterior(x_encoded, action)
 
-        x_decoded = self.decoder.sample({'z_1': z1, 'z_2': z2})['x_decoded']
         loss_img = self.decoder.get_log_prob(
             {'z_1': z1, 'z_2': z2, 'x_decoded': state}, sum_features=False)
         loss_reward = - self.reward_dist.get_log_prob(
