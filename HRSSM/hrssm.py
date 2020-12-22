@@ -250,8 +250,8 @@ class HRSSM(Model):
             post_abs_state_list.append(post_abs_state)
             post_obs_state_list.append(post_obs_state)
             #### for prior state ####
-            abs_belief_list.append(abs_belief_list)
-            obs_belief_list.append(obs_belief_list)
+            abs_belief_list.append(abs_belief)
+            obs_belief_list.append(obs_belief)
         
         return post_abs_state_list, post_obs_state_list, abs_belief_list, obs_belief_list
     
@@ -268,7 +268,7 @@ class HRSSM(Model):
         
         # for reconstruction
         if abs_belief_list:
-            for t in range(self.init_size, self.init_size + self.seq_size):
+            for t in range(self.seq_size):
                 abs_belief = abs_belief_list[t]
                 # p(z_t | c_t)
                 prior_abs_state = self.prior_abs_state.sample({"abs_belief": abs_belief}, reparam=True)["prior_abs_state"]
@@ -288,12 +288,13 @@ class HRSSM(Model):
         # p(x_t | s_t)
         obs_feat_list = []
         obs_rec_list = []
-        for t in range(self.init_size, self.init_size + self.seq_size):
+        for t in range(self.seq_size):
             obs_belief = obs_belief_list[t]
             obs_state = obs_state_list[t]
             obs_feat = self.obs_feat.sample({"obs_belief": obs_belief, "obs_state": obs_state})["obs_feat"]
             # p(x_t | s_t)
-            obs_rec = self.dec_obs.sample({"obs_feat": obs_feat_list}, reparam=True)["x"]
+            # obs_rec = self.dec_obs.sample({"obs_feat": obs_feat}, reparam=True)["x"]
+            obs_rec = self.dec_obs.sample_mean({"obs_feat": obs_feat})
             obs_feat_list.append(obs_feat)
             obs_rec_list.append(obs_rec)
         
@@ -302,7 +303,7 @@ class HRSSM(Model):
     def prior_boundary_mask(self, obs_feat_list):
         # p(m_t=1 |s_t)
         prior_boundary_log_alpha_list = []
-        for t in range(self.init_size, self.init_size + self.seq_size):
+        for t in range(self.seq_size):
             obs_feat = obs_feat_list[t]
             prior_boundary_log_alpha = self.prior_boundary.sample({"obs_feat": obs_feat})["prior_boundary_log_alpha"]
 
@@ -441,7 +442,7 @@ class HRSSM(Model):
 
         # kl loss for boundary
         kl_mask = (post_boundary_log_density - prior_boundary_log_density)
-        total_loss = obs_cost.mean() + kl_abs_state_list.mean() + kl_obs_state_list.mean() + kl_mask.mean()
+        total_loss = obs_cost.mean() + kl_abs.mean() + kl_obs.mean() + kl_mask.mean()
 
         return total_loss
 
@@ -492,7 +493,7 @@ class HRSSM(Model):
         post_abs_state_list, post_obs_state_list, abs_belief_list, obs_belief_list = self.infer_state(boundary_data_list, abs_post_fwd_list, abs_post_bwd_list, obs_post_fwd_list)
         
         # P(X|Z, S)
-        obs_feat_list, obs_rec_list = self.decode(obs_belief_list, obs_belief_list, post_obs_state_list)
+        obs_feat_list, obs_rec_list = self.decode(obs_belief_list, post_obs_state_list)
 
         # P(Z, S, M)
         prior_abs_state_list, prior_obs_state_list = self.prior_state(boundary_data_list, abs_belief_list, obs_belief_list)
@@ -557,7 +558,8 @@ class HRSSM(Model):
             obs_state = self.prior_obs_state.sample({"obs_belief": obs_belief}, reparam=True)["prior_obs_state"]
             obs_feat = self.obs_feat.sample({"obs_belief": obs_belief, "obs_state": obs_state})["obs_feat"]
 
-            obs_rec = self.dec_obs.sample({"obs_feat": obs_feat}, reparam=True)["x"]
+            # obs_rec = self.dec_obs.sample({"obs_feat": obs_feat}, reparam=True)["x"]
+            obs_rec = self.dec_obs.sample_mean({"obs_feat": obs_feat})
             obs_rec_list.append(obs_rec)
 
         obs_rec_list = torch.stack(obs_rec_list, dim=1)
@@ -597,12 +599,13 @@ class HRSSM(Model):
             obs_state = self.prior_obs_state.sample({"obs_belief": obs_belief}, reparam=True)["prior_obs_state"]
             obs_feat = self.obs_feat.sample({"obs_belief": obs_belief, "obs_state": obs_state})["obs_feat"]
 
-            obs_rec = self.dec_obs.sample({"obs_feat": obs_feat}, reparam=True)["x"]
+            # obs_rec = self.dec_obs.sample({"obs_feat": obs_feat}, reparam=True)["x"]
+            obs_rec = self.dec_obs.sample_mean({"obs_feat": obs_feat})
 
             obs_rec_list.append(obs_rec)
             boundary_data_list.append(read_data)
 
-            prior_boundary = self.boundary_sampler(self.prior_boundary(obs_feat))[0]
+            prior_boundary = self.boundary_sampler(self.prior_boundary.sample({"obs_feat": obs_feat})["prior_boundary_log_alpha"])[0]
             read_data = prior_boundary[:, 0].unsqueeze(-1)
             copy_data = prior_boundary[:, 1].unsqueeze(-1)
 

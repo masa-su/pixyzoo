@@ -81,7 +81,7 @@ def main():
 
     # set writer
     exp_name = set_exp_name(args)
-    writer = SummaryWriter(args.log_dir + exp_name
+    writer = SummaryWriter(args.log_dir + exp_name)
 
     # load dataset
     train_loader, test_loader = full_dataloader(seq_size, init_size, args.batch_size)
@@ -92,7 +92,7 @@ def main():
                     'max_seg_num': args.seg_num, 'max_seg_len': args.seg_len}
     optimizer = optim.Adam
     optimizer_params = {'lr': args.learn_rate, 'amsgrad': True}
-    model = HRSSM(optimizer=optimizer, optimizer_params=optimizer_params, clip_grad_norm=args.grad_clip, hrssm_params=hrssm_params).to(device)
+    model = HRSSM(optimizer=optimizer, optimizer_params=optimizer_params, clip_grad_norm=args.grad_clip, hrssm_params=hrssm_params)
 
     # test data
     pre_test_full_data_list = iter(test_loader).next()
@@ -117,11 +117,11 @@ def main():
             loss = model.train(train_obs_list)
 
             # log
-            if b_idx % 10 == 0:
+            if b_idx % 1000 == 0:
                 writer.add_scalar('train/total_loss', loss, b_idx)
 
             # test time
-            if b_idx % 10 == 0:
+            if b_idx % 1000 == 0:
                 # set data
                 pre_test_init_data_list = pre_test_full_data_list[:, :init_size]
                 post_test_init_data_list = postprocess(pre_test_init_data_list)
@@ -130,7 +130,6 @@ def main():
 
                 with torch.no_grad():
                     # test data elbo
-                    model.eval()
                     results = model.reconstruction(pre_test_full_data_list)
                     post_test_rec_data_list = postprocess(results['rec_data'])
                     output_img, output_mask = plot_rec(post_test_init_data_list,

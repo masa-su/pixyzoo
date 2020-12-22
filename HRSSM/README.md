@@ -7,7 +7,8 @@ https://github.com/taesupkim/vta
 
 ## 3dmaze dataset
 ### Download the dataset
-Google drive: https://drive.google.com/drive/u/2/folders/1cPdCyrUfHxkidTbkW790H4Jy9jLTonzr
+Google drive: https://drive.google.com/drive/u/2/folders/1cPdCyrUfHxkidTbkW790H4Jy9jLTonzr  
+
 please put this file in HRSSM directory
 ### Run
 $ python train.py --seq-size 40 --seg-num 5 --seg-len 16
