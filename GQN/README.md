@@ -9,7 +9,7 @@
 ## Requirements
 - Python >=3.6
 - Pytorch
-- Pixyz = 0.0.5
+- Pixyz = 0.2.0
 - TensorBoardX
 
 ## How to Train

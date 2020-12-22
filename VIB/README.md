@@ -4,3 +4,5 @@
 
 * vib.ipynb: implementation of variational information battleneck
 * baseline.ipynb: vanilla DNN
+
+WARNING: Pixyz version 0.2.0 is required

@@ -8,15 +8,16 @@ This repository contains various deep generative models implemented in [Pixyz](h
 - [ ] DRAW
 - [ ] Conv DRAW
 - [ ] SCAN
-- [x] VRNN (checking)
-- [x] Deep Markov Model（checking）
+- [x] VRNN
+- [x] Deep Markov Model
 - [ ] IntroVAE
 - [ ] beta-VAE
-- [x] TD-VAE (checking)
+- [x] TD-VAE
 - [x] Variational Information Bottleneck
 - [ ] WGAN
-- [x] Factor VAE (checking)
+- [x] Factor VAE
 - [ ] VGAN
+- [x] DynaNet
 
 
 # How To Contribute
@@ -26,4 +27,4 @@ This repository contains various deep generative models implemented in [Pixyz](h
 - [Masahiro Suzuki](https://github.com/masa-su) Principal contributor of [Pixyz](https://github.com/masa-su/pixyz)
 - [Shohei Taniguchi](https://github.com/iShohei220)
 - [Tatsuya Matsushima](https://github.com/TMats)
-
+- [Keno Harada](https://github.com/kenoharada)
