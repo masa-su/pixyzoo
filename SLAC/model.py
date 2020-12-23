@@ -180,7 +180,7 @@ class Actor(nn.Module):
         log_prob = self.pi.get_log_prob(
             {'obs_and_action': x_encoded, 'pi': pi}).reshape([-1, 1])
 
-        log_prob += np.log(1 - action.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
+        log_prob += torch.log(1 - action.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
         return action, log_prob
 
     def act_greedy(self, x_encoded):
