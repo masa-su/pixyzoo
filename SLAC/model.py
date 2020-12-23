@@ -166,8 +166,9 @@ class Pie(Normal):
         return {"loc": loc, "scale": scale}
 
 
-class Actor:
+class Actor(nn.Module):
     def __init__(self, num_action):
+        super().__init__()
         # pi(a_t| x_{1:t}, a_{1:t-1})
         self.pi = Pie(in_dim=num_seq*encoded_obs_dim +
                       (num_seq - 1)*num_action, action_dim=num_action)
@@ -186,8 +187,9 @@ class Actor:
         return torch.tanh(self.pi(x_encoded)['loc'])
 
 
-class LatentModel:
+class LatentModel(nn.Module):
     def __init__(self, num_action, obs_shape):
+        super().__init__()
         self.encoder = Encoder(input_dim=obs_shape[0])
         self.decoder = Decoder()
         # p(z1(0))
@@ -314,12 +316,12 @@ class SLAC(nn.Module):
         torch.cuda.manual_seed(seed)
 
         self.critic = QFunc(z1_dim=z1_dim, z2_dim=z2_dim,
-                            num_action=action_shape[0])  # TODO: configure alpha and tau
+                            num_action=action_shape[0]).to(device)
         self.critic_target = QFunc(
-            z1_dim=z1_dim, z2_dim=z2_dim, num_action=action_shape[0])
-        self.actor = Actor(num_action=action_shape[0])
+            z1_dim=z1_dim, z2_dim=z2_dim, num_action=action_shape[0]).to(device)
+        self.actor = Actor(num_action=action_shape[0]).to(device)
         self.latent = LatentModel(
-            num_action=action_shape[0], obs_shape=obs_shape)
+            num_action=action_shape[0], obs_shape=obs_shape).to(device)
         self.tau = tau
         self.gamma = gamma
         self.device = device
