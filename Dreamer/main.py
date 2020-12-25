@@ -279,12 +279,23 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         # Calculate observation likelihood, reward likelihood and KL losses (for t = 0 only for latent overshooting); sum over final dims, average over batch and time (original implementation, though paper seems to miss 1/T scaling?)
         if args.worldmodel_LogProbLoss:
             # TODO: rewrite this
+            """
             observation_dist = Normal(
                 bottle(observation_model, (beliefs, posterior_states)), 1)
             observation_loss = -observation_dist.log_prob(observations[1:]).sum(
                 dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
+            """
+            observation_loss = -bottle(reward_model.get_log_prob, {
+                'h_t': beliefs, 's_t': posterior_states, 'o_t': observations[1:]})
+            observation_loss = observation_loss(dim=(0, 1)).sum(
+                dim=2 if args.sybolic_env else (2, 3, 4)).mean(dim=(0, 1))
         else:
-            observation_loss = F.mse_loss(bottle(observation_model, (beliefs, posterior_states)), observations[1:], reduction='none').sum(
+            observation_mean = observation_model(
+                {'h_t': beliefs, 's_t': posterior_states})['loc']
+            T, B = beliefs.size[2:]
+            observation_mean = observation_mean.view(
+                T, B, *observation_mean.size[1:])
+            observation_loss = F.mse_loss(observation_mean, observations[1:], reduction='none').sum(
                 dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
 
         if args.worldmodel_LogProbLoss:
@@ -294,14 +305,14 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 bottle(reward_model, (beliefs, posterior_states)), 1)
             reward_loss = -reward_dist.log_prob(rewards[:-1]).mean(dim=(0, 1))
             """
-            reward_loss = bottle(reward_model.get_log_prob, {
+            reward_loss = -bottle(reward_model.get_log_prob, {
                                  'h_t': beliefs, 's_t': posterior_states, 'r_t': rewards[:-1]})
             reward_loss = reward_loss.mean(dim=(0, 1))
         else:
             reward_mean = reward_model(
                 {'h_t': beliefs, 's_t': posterior_states})['loc']
             T, B = beliefs.size[:2]
-            reward_mean = reward_mean.view(T, B, *reward_mean[1:])
+            reward_mean = reward_mean.view(T, B, *reward_mean.size[1:])
             reward_loss = F.mse_loss(reward_mean, rewards[:-1], reduction='none').mean(dim=(0, 1))
 
         # transition loss

@@ -1,4 +1,4 @@
-from typing import Optional, List
+from typing import Dict, Optional, List
 import torch
 from torch import jit, nn
 from torch.nn import functional as F
@@ -9,31 +9,37 @@ from torch.distributions.transformed_distribution import TransformedDistribution
 import numpy as np
 
 from pixyz.distributions import Normal
-
+from typing import Dict
 
 # Wraps the input tuple for a function to process a (time, batch, features sequence in batch, features) (assumes one output)
-def bottle(f, x_dict):
+
+
+
+
+def bottle(f, x_dict: Dict):
     """
     x_dict: {"Name of the variable": variable}
     """
     assert len(x_dict) >= 1
     # x_tuple: (T, B, features...)
-    x_sizes = tuple(map(lambda x: x.size(), x_tuple))
-    # apply neural network
+    x_sizes = tuple(map(lambda x: x.size(), x_dict.values()))
+    """
     y = f(*map(lambda x: x[0].view(x[1][0] * x[1]
-                                   [1], *x[1][2:]), zip(x_tuple, x_sizes)))
+                                   [1], *x[1][2:]), zip(x_dict.name, x_sizes)))
     # (T * B, features...)にしてからネットワークに食わせる(x.view(x_size[0] * x_size[1], * x_size[2:]))
+    """
     # x_tupleの中身はconcatしていない
     feed_dict = {}
     for name, tensor in x_dict.items():
         T, B, feature_dims = tensor.size()[0], tensor.size[1], tensor.size[2:]
         feed_dict[name] = tensor.view(T*B, *feature_dims)
-    y = f(feed_dict)
+    y = f(feed_dict) # apply a neural network
     y_size = y.size()
     output = y.view(T, B, *y_size[1:])
     return output
 
 class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
+
     __constants__ = ['min_std_dev']
 
     def __init__(self, belief_size, state_size, action_size, hidden_size, embedding_size, activation_function='relu', min_std_dev=0.1):
@@ -79,7 +85,6 @@ class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
         # s : -x--X--X--X--X--X-
 
 
-    @jit.script_method
     def forward(self, prev_state: torch.Tensor, actions: torch.Tensor, prev_belief: torch.Tensor, observations: Optional[torch.Tensor] = None, nonterminals: Optional[torch.Tensor] = None) -> List[torch.Tensor]:
         '''
         generate a sequence of data
@@ -92,7 +97,8 @@ class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
         T = actions.size(0) + 1
         beliefs, prior_states, prior_means, prior_std_devs, posterior_states, posterior_means, posterior_std_devs = \
                         [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T
-        beliefs[0], prior_states[0], posterior_states[0] = prev_belief, prev_state, prev_state
+        beliefs[0], posterior_states[0] = prev_belief, prev_state, prev_state
+
 
         # Loop over time sequence
         for t in range(T - 1):
@@ -120,6 +126,7 @@ class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
             loc_and_scale = self.stochastic_state_model({'h_t': beliefs[t + 1]})
             prior_means[t + 1], prior_std_devs[t + 1] = loc_and_scale['loc'], loc_and_scale['scale']
 
+
             if observations is not None:
                 # Compute state posterior by applying transition dynamics and using current observation
                 # s_t ~ q(s_t | h_t, o_t) (Observation Model)
@@ -136,7 +143,8 @@ class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
                     torch.randn_like(posterior_means[t + 1])
                 """
                 posterior_means[t + 1] = self.obs_encoder.sample({'h_t': beliefs[t + 1], 'o_t': observations[t_ + 1]})['s_t']
-                loc_and_scale = self.obs_encoder({'h_t': beliefs[t + 1], 'o_t': observations[t_ + 1]})
+                loc_and_scale = self.obs_encoder({'h_t': beliefs[
+                    t + 1], 'o_t': observations[t_ + 1]})
                 posterior_means[t + 1] = loc_and_scale['means']
                 posterior_std_devs[t + 1] = loc_and_scale['scale']
 
@@ -150,24 +158,25 @@ class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
 
 
 # class SymbolicObservationModel(jit.ScriptModule):
-class DenseDecoder(nn.Module):
+class DenseDecoder(Normal):
     def __init__(self, observation_size, belief_size, state_size, embedding_size, activation_function='relu'):
-        super().__init__()
+        super().__init__(var=['o_t'], cond_var=['h_t', 's_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, embedding_size)
         self.fc2 = nn.Linear(embedding_size, embedding_size)
         self.fc3 = nn.Linear(embedding_size, observation_size)
         self.modules = [self.fc1, self.fc2, self.fc3]
 
-    def forward(self, belief, state):
-        hidden = self.act_fn(self.fc1(torch.cat([belief, state], dim=1)))
+    def forward(self, h_t, s_t):
+        hidden = self.act_fn(self.fc1(torch.cat([h_t, s_t], dim=1)))
         hidden = self.act_fn(self.fc2(hidden))
         observation = self.fc3(hidden)
-        return observation
+        return {'loc': observation, 'scale': 1.0}
 
 class ObsEncoder(Normal):
     """o_t ~ p(o_t | h_t, s_t)"""
     def __init__(self, h_size, s_size, activation, embedding_size, hidden_size, min_std_dev):
+
         super().__init__(var=["s_t"], cond_var=["h_t", "o_t"])
         self.activation = activation
         self.fc1 = nn.Linear(
@@ -184,8 +193,10 @@ class ObsEncoder(Normal):
 class StochasticStateModel(Normal):
     """p(s_t | h_t)"""
     def __init__(self, h_size, hidden_size, activation, s_size, min_std_dev):
+
         super().__init__(var=['s_t'], cond_var=['h_t'], name="StochasticStateModel")
-        self.fc1 = nn.Linear(h_size, hidden_size)
+        self.fc1 = nn.Linear(h_size, hidden_size
+            )
         self.fc2 = nn.Linear(hidden_size, 2 * s_size)
         self.activation = activation
         self.min_std_dev = min_std_dev
@@ -198,11 +209,11 @@ class StochasticStateModel(Normal):
         return {"loc": loc, "scale": scale}
 
 
-class ConvDecoder(nn.Module):
+class ConvDecoder(Normal):
     __constants__ = ['embedding_size']
 
     def __init__(self, belief_size, state_size, embedding_size, activation_function='relu'):
-        super().__init__()
+        super().__init__(var=['o_t'], cond_var=['h_t', 's_t'])
         self.act_fn = getattr(F, activation_function)
         self.embedding_size = embedding_size
         self.fc1 = nn.Linear(belief_size + state_size, embedding_size)
@@ -213,15 +224,15 @@ class ConvDecoder(nn.Module):
         self.modules = [self.fc1, self.conv1,
                         self.conv2, self.conv3, self.conv4]
 
-    def forward(self, belief, state):
+    def forward(self, h_t, s_t):
         # No nonlinearity here
-        hidden = self.fc1(torch.cat([belief, state], dim=1))
+        hidden = self.fc1(torch.cat([h_t, s_t], dim=1))
         hidden = hidden.view(-1, self.embedding_size, 1, 1)
         hidden = self.act_fn(self.conv1(hidden))
         hidden = self.act_fn(self.conv2(hidden))
         hidden = self.act_fn(self.conv3(hidden))
         observation = self.conv4(hidden)
-        return observation
+        return {'loc': observation, 'scale': 1.0}
 
 
 def ObservationModel(symbolic, observation_size, belief_size, state_size, embedding_size, activation_function='relu'):
@@ -270,10 +281,10 @@ class ValueModel(jit.ScriptModule):
         return reward
 
 
-class ActorModel(jit.ScriptModule):
+class Pie(Normal):
     def __init__(self, belief_size, state_size, hidden_size, action_size, dist='tanh_normal',
                  activation_function='elu', min_std=1e-4, init_std=5, mean_scale=5):
-        super().__init__()
+        super().__init__(cond_var=['h_t', 's_t'], var=['a_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -287,10 +298,9 @@ class ActorModel(jit.ScriptModule):
         self._init_std = init_std
         self._mean_scale = mean_scale
 
-    @jit.script_method
-    def forward(self, belief, state):
+    def forward(self, h_t, s_t):
         raw_init_std = torch.log(torch.exp(self._init_std) - 1)
-        x = torch.cat([belief, state], dim=1)
+        x = torch.cat([h_t, s_t], dim=1)
         hidden = self.act_fn(self.fc1(x))
         hidden = self.act_fn(self.fc2(hidden))
         hidden = self.act_fn(self.fc3(hidden))
@@ -301,8 +311,9 @@ class ActorModel(jit.ScriptModule):
         action_mean = self._mean_scale * \
             torch.tanh(action_mean / self._mean_scale)
         action_std = F.softplus(action_std_dev + raw_init_std) + self._min_std
-        return action_mean, action_std
+        return {'loc': action_mean, 'scale': action_std}
 
+    """
     def get_action(self, belief, state, det=False):
         action_mean, action_std = self.forward(belief, state)
         dist = Normal(action_mean, action_std)
@@ -313,6 +324,21 @@ class ActorModel(jit.ScriptModule):
             return dist.mode()
         else:
             return dist.rsample()
+    """
+class Actor(nn.Module):
+    def __init__(self, belief_size, state_size, hidden_size, action_size, dist='tanh_normal',
+                 activation_function='elu', min_std=1e-4, init_std=5, mean_scale=5):
+        super().__init__()
+        self.pie = Pie(belief_size, state_size, hidden_size, action_size, dist='tanh_normal',
+                 activation_function='elu', min_std=1e-4, init_std=5, mean_scale=5)
+
+    def get_action(self, belief, state, det=False):
+        #TODO: check lines below
+        if det:
+            return self.pie(h_t=belief, s_t=state)['loc']
+        else:
+            return torch.tanh(self.pie.sample({'h_t': belief, 's_t': state})['a_t'])
+
 
 
 class SymbolicEncoder(jit.ScriptModule):
@@ -382,6 +408,7 @@ class TanhBijector(torch.distributions.Transform):
     def _call(self, x): return torch.tanh(x)
 
     def _inverse(self, y: torch.Tensor):
+        """クランプして逆関数かけてる"""
         y = torch.where(
             (torch.abs(y) <= 1.),
             torch.clamp(y, -0.99999997, 0.99999997),
@@ -389,9 +416,11 @@ class TanhBijector(torch.distributions.Transform):
         y = atanh(y)
         return y
 
+    """
+    # this func is not used
     def log_abs_det_jacobian(self, x, y):
         return 2. * (np.log(2) - x - F.softplus(-2. * x))
-
+    """
 
 class SampleDist:
     def __init__(self, dist, samples=100):
@@ -410,7 +439,7 @@ class SampleDist:
         return torch.mean(sample, 0)
 
     def mode(self):
-        dist = self._dist.expand((self._samples, *self._dist.batch_shape))
+        dist = self._dist.expand((self._samples, *self._dist.batch_shape)) # サンプル数, B
         sample = dist.rsample()
         logprob = dist.log_prob(sample)
         batch_size = sample.size(1)
