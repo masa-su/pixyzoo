@@ -1,6 +1,6 @@
 from typing import Dict, Optional, List
 import torch
-from torch import jit, nn
+from torch import jit, nn, var
 from torch.nn import functional as F
 import torch.distributions
 # from torch.distributions.normal import Normal
@@ -16,7 +16,7 @@ from typing import Dict
 
 
 
-def bottle(f, x_dict: Dict):
+def bottle_dict(f, x_dict: Dict, var_name: str='', kwargs={}):
     """
     x_dict: {"Name of the variable": variable}
     """
@@ -31,14 +31,29 @@ def bottle(f, x_dict: Dict):
     # x_tupleの中身はconcatしていない
     feed_dict = {}
     for name, tensor in x_dict.items():
-        T, B, feature_dims = tensor.size()[0], tensor.size[1], tensor.size[2:]
+        T, B, feature_dims = tensor.size()[0], tensor.size()[1], tensor.size()[2:]
         feed_dict[name] = tensor.view(T*B, *feature_dims)
-    y = f(feed_dict) # apply a neural network
-    y_size = y.size()
-    output = y.view(T, B, *y_size[1:])
+    if var_name == '':
+        y = f(feed_dict, **kwargs)
+    else:
+        y = f(feed_dict, **kwargs)[var_name] # apply a neural network
+    y_size = y.size() # (1, T * B, ...)
+    output = y.view(T, B, *y_size[2:])
     return output
 
-class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
+def bottle_tuple(f, x_tuple, var_name: str='', kwargs={}):
+  # x_tuple: (T, B, features...)
+  x_sizes = tuple(map(lambda x: x.size(), x_tuple))
+  y = f(*map(lambda x: x[0].view(x[1][0] * x[1][1], *x[1][2:]), zip(x_tuple, x_sizes)), **kwargs)
+  if var_name != '':
+      y = y[var_name]
+  # (T * B, features...)にしてからネットワークに食わせる(x.view(x_size[0] * x_size[1], * x_size[2:]))
+  # x_tupleの中身はconcatしていない
+  y_size = y.size()
+  output = y.view(x_sizes[0][0], x_sizes[0][1], *y_size[1:])
+  return output
+
+class TransitionModel(nn.Module):    # corresponds to RSSM?
 
     __constants__ = ['min_std_dev']
 
@@ -64,7 +79,7 @@ class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
 
         # pixyz dists
         self.stochastic_state_model = StochasticStateModel(
-            h_size=belief_size, hidden_size=hidden_size, activation=self.act_fn, min_std_dev=self.min_std_dev)
+            h_size=belief_size, s_size=state_size, hidden_size=hidden_size, activation=self.act_fn, min_std_dev=self.min_std_dev)
 
         self.obs_encoder = ObsEncoder(
             h_size=belief_size, s_size=state_size, activation=self.act_fn, embedding_size=embedding_size, hidden_size=hidden_size, min_std_dev=self.min_std_dev)
@@ -97,7 +112,7 @@ class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
         T = actions.size(0) + 1
         beliefs, prior_states, prior_means, prior_std_devs, posterior_states, posterior_means, posterior_std_devs = \
                         [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T
-        beliefs[0], posterior_states[0] = prev_belief, prev_state, prev_state
+        beliefs[0], posterior_states[0], posterior_states[0] = prev_belief, prev_state, prev_state
 
 
         # Loop over time sequence
@@ -123,7 +138,7 @@ class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
                 prior_std_devs[t + 1] * torch.randn_like(prior_means[t + 1])
             """
             prior_states[t + 1] = self.stochastic_state_model.sample({'h_t': beliefs[t + 1]})["s_t"]
-            loc_and_scale = self.stochastic_state_model({'h_t': beliefs[t + 1]})
+            loc_and_scale = self.stochastic_state_model(h_t=beliefs[t + 1])
             prior_means[t + 1], prior_std_devs[t + 1] = loc_and_scale['loc'], loc_and_scale['scale']
 
 
@@ -142,10 +157,9 @@ class TransitionModel(jit.ScriptModule):    # corresponds to RSSM?
                     posterior_std_devs[t + 1] * \
                     torch.randn_like(posterior_means[t + 1])
                 """
-                posterior_means[t + 1] = self.obs_encoder.sample({'h_t': beliefs[t + 1], 'o_t': observations[t_ + 1]})['s_t']
-                loc_and_scale = self.obs_encoder({'h_t': beliefs[
-                    t + 1], 'o_t': observations[t_ + 1]})
-                posterior_means[t + 1] = loc_and_scale['means']
+                posterior_states[t + 1] = self.obs_encoder.sample({'h_t': beliefs[t + 1], 'o_t': observations[t_ + 1]})['s_t']
+                loc_and_scale = self.obs_encoder(h_t=beliefs[t + 1], o_t=observations[t_ + 1])
+                posterior_means[t + 1] = loc_and_scale['loc']
                 posterior_std_devs[t + 1] = loc_and_scale['scale']
 
         # Return new hidden states
@@ -242,28 +256,29 @@ def ObservationModel(symbolic, observation_size, belief_size, state_size, embedd
         return ConvDecoder(belief_size, state_size, embedding_size, activation_function)
 
 
-class RewardModel(jit.ScriptModule):
-    def __init__(self, belief_size, state_size, hidden_size, activation_function='relu'):
+class RewardModel(Normal):
+    def __init__(self, h_size, s_size, hidden_size, activation='relu'):
+        # p(o_t | h_t, s_t)
         # [--belief-size: 200, --hidden-size: 200, --state-size: 30]
-        super().__init__()
-        self.act_fn = getattr(F, activation_function)
-        self.fc1 = nn.Linear(belief_size + state_size, hidden_size)
+        super().__init__(cond_var=['h_t', 's_t'], var=['r_t'])
+        self.act_fn = getattr(F, activation)
+        self.fc1 = nn.Linear(s_size + h_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, 1)
         self.modules = [self.fc1, self.fc2, self.fc3]
 
-    @jit.script_method
-    def forward(self, belief, state):
-        x = torch.cat([belief, state], dim=1)
+    def forward(self, h_t, s_t):
+        x = torch.cat([h_t, s_t], dim=1)
         hidden = self.act_fn(self.fc1(x))
         hidden = self.act_fn(self.fc2(hidden))
         reward = self.fc3(hidden).squeeze(dim=1)
-        return reward
+        scale = torch.ones_like(reward)
+        return {'loc': reward, 'scale': scale}
 
 
-class ValueModel(jit.ScriptModule):
+class ValueModel(Normal):
     def __init__(self, belief_size, state_size, hidden_size, activation_function='relu'):
-        super().__init__()
+        super().__init__(cond_var=['h_t', 's_t'], var=['r_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, hidden_size)
@@ -271,14 +286,14 @@ class ValueModel(jit.ScriptModule):
         self.fc4 = nn.Linear(hidden_size, 1)
         self.modules = [self.fc1, self.fc2, self.fc3, self.fc4]
 
-    @jit.script_method
-    def forward(self, belief, state):
-        x = torch.cat([belief, state], dim=1)
+    def forward(self, h_t, s_t):
+        x = torch.cat([h_t, s_t], dim=1)
         hidden = self.act_fn(self.fc1(x))
         hidden = self.act_fn(self.fc2(hidden))
         hidden = self.act_fn(self.fc3(hidden))
-        reward = self.fc4(hidden).squeeze(dim=1)
-        return reward
+        loc = self.fc4(hidden).squeeze(dim=1)
+        scale = torch.ones_like(loc)
+        return {'loc': loc, 'scale': scale}
 
 
 class Pie(Normal):
@@ -299,7 +314,7 @@ class Pie(Normal):
         self._mean_scale = mean_scale
 
     def forward(self, h_t, s_t):
-        raw_init_std = torch.log(torch.exp(self._init_std) - 1)
+        raw_init_std = torch.log(torch.exp(torch.tensor(self._init_std, dtype=torch.float32)) - 1)
         x = torch.cat([h_t, s_t], dim=1)
         hidden = self.act_fn(self.fc1(x))
         hidden = self.act_fn(self.fc2(hidden))
@@ -325,7 +340,7 @@ class Pie(Normal):
         else:
             return dist.rsample()
     """
-class Actor(nn.Module):
+class ActorModel(nn.Module):
     def __init__(self, belief_size, state_size, hidden_size, action_size, dist='tanh_normal',
                  activation_function='elu', min_std=1e-4, init_std=5, mean_scale=5):
         super().__init__()
@@ -335,10 +350,18 @@ class Actor(nn.Module):
     def get_action(self, belief, state, det=False):
         #TODO: check lines below
         if det:
-            return self.pie(h_t=belief, s_t=state)['loc']
+            # get mode
+            #TODO: check this
+            actions = self.pie.sample({'h_t':belief, 's_t': state}, sample_shape=[100])['a_t'] # (100, 2450, 6)
+            batch_size = actions.size(1)
+            feature_size = actions.size(2)
+            logprob = self.pie.get_log_prob({'h_t': belief, 's_t': state, 'a_t': actions}, sum_features=False) # (100, 2450, 6)
+            logprob = logprob.sum(dim=-1)
+            indices = torch.argmax(logprob, dim=0).reshape(1, batch_size, 1).expand(1, batch_size, feature_size)
+            return torch.gather(actions, 0, indices).squeeze(0)
+
         else:
             return torch.tanh(self.pie.sample({'h_t': belief, 's_t': state})['a_t'])
-
 
 
 class SymbolicEncoder(jit.ScriptModule):

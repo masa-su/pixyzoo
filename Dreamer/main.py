@@ -10,7 +10,7 @@ from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
 from env import CONTROL_SUITE_ENVS, Env, GYM_ENVS, EnvBatcher
 from memory import ExperienceReplay
-from models import bottle, Encoder, ObservationModel, RewardModel, TransitionModel, ValueModel, ActorModel
+from models import bottle_tuple, bottle_dict, Encoder, ObservationModel, RewardModel, TransitionModel, ValueModel, ActorModel
 from planner import MPCPlanner
 from utils import lineplot, write_video, imagine_ahead, lambda_return, FreezeParameters, ActivateParameters
 from tensorboardX import SummaryWriter
@@ -142,7 +142,7 @@ writer = SummaryWriter(summary_name.format(args.env, args.id))
 # Initialise training environment and experience replay memory
 env = Env(args.env, args.symbolic_env, args.seed,
           args.max_episode_length, args.action_repeat, args.bit_depth)
-if args.experience_replay is not '' and os.path.exists(args.experience_replay):
+if args.experience_replay != '' and os.path.exists(args.experience_replay):
     D = torch.load(args.experience_replay)
     metrics['steps'], metrics['episodes'] = [D.steps] * \
         D.episodes, list(range(1, D.episodes + 1))
@@ -168,8 +168,8 @@ transition_model = TransitionModel(args.belief_size, args.state_size, env.action
                                    args.hidden_size, args.embedding_size, args.dense_activation_function).to(device=args.device)
 observation_model = ObservationModel(args.symbolic_env, env.observation_size, args.belief_size,
                                      args.state_size, args.embedding_size, args.cnn_activation_function).to(device=args.device)
-reward_model = RewardModel(args.belief_size, args.state_size, args.hidden_size,
-                           args.dense_activation_function).to(device=args.device)
+reward_model = RewardModel(h_size=args.belief_size, s_size=args.state_size, hidden_size=args.hidden_size,
+                           activation=args.dense_activation_function).to(device=args.device)
 encoder = Encoder(args.symbolic_env, env.observation_size,
                   args.embedding_size, args.cnn_activation_function).to(device=args.device)
 actor_model = ActorModel(args.belief_size, args.state_size, args.hidden_size,
@@ -187,7 +187,7 @@ actor_optimizer = optim.Adam(actor_model.parameters(
 ), lr=0 if args.learning_rate_schedule != 0 else args.actor_learning_rate, eps=args.adam_epsilon)
 value_optimizer = optim.Adam(value_model.parameters(
 ), lr=0 if args.learning_rate_schedule != 0 else args.value_learning_rate, eps=args.adam_epsilon)
-if args.models is not '' and os.path.exists(args.models):
+if args.models != '' and os.path.exists(args.models):
     model_dicts = torch.load(args.models)
     transition_model.load_state_dict(model_dicts['transition_model'])
     observation_model.load_state_dict(model_dicts['observation_model'])
@@ -223,7 +223,7 @@ def update_belief_and_act(args, env, planner, transition_model, encoder, belief,
     if explore:
         # Add gaussian exploration noise on top of the sampled action
         action = torch.clamp(
-            Normal(action, args.action_noise).rsample(), -1, 1)
+            Normal(action, args.action_noise).rsample(), -1, 1) #TODO: rewrite this line
         # action = action + args.action_noise * torch.randn_like(action)  # Add exploration noise ε ~ p(ε) to the action
     next_observation, reward, done = env.step(action.cpu() if isinstance(
         env, EnvBatcher) else action[0].cpu())  # Perform environment step (action repeats handled internally)
@@ -274,48 +274,39 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
             args.batch_size, args.state_size, device=args.device)
         # Update belief/state using posterior from previous belief/state, previous action and current observation (over entire sequence at once)
         beliefs, prior_states, prior_means, prior_std_devs, posterior_states, posterior_means, posterior_std_devs = transition_model(
-            init_state, actions[:-1], init_belief, bottle(encoder, (observations[1:], )), nonterminals[:-1])
+            init_state, actions[:-1], init_belief, bottle_tuple(encoder, (observations[1:], )), nonterminals[:-1])
 
         # Calculate observation likelihood, reward likelihood and KL losses (for t = 0 only for latent overshooting); sum over final dims, average over batch and time (original implementation, though paper seems to miss 1/T scaling?)
         if args.worldmodel_LogProbLoss:
-            # TODO: rewrite this
             """
             observation_dist = Normal(
                 bottle(observation_model, (beliefs, posterior_states)), 1)
             observation_loss = -observation_dist.log_prob(observations[1:]).sum(
                 dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
             """
-            observation_loss = -bottle(reward_model.get_log_prob, {
-                'h_t': beliefs, 's_t': posterior_states, 'o_t': observations[1:]})
-            observation_loss = observation_loss(dim=(0, 1)).sum(
-                dim=2 if args.sybolic_env else (2, 3, 4)).mean(dim=(0, 1))
+            observation_loss = -bottle_dict(observation_model.get_log_prob, {
+                'h_t': beliefs, 's_t': posterior_states, 'o_t': observations[1:]}, None, kwargs={'sum_features': False})
+            observation_loss = observation_loss.sum(
+                dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
         else:
-            observation_mean = observation_model(
-                {'h_t': beliefs, 's_t': posterior_states})['loc']
-            T, B = beliefs.size[2:]
-            observation_mean = observation_mean.view(
-                T, B, *observation_mean.size[1:])
+            observation_mean = bottle_tuple(observation_model, (beliefs, posterior_states), 'loc')
             observation_loss = F.mse_loss(observation_mean, observations[1:], reduction='none').sum(
                 dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
 
         if args.worldmodel_LogProbLoss:
-            # reward prediction
             """
             reward_dist = Normal(
                 bottle(reward_model, (beliefs, posterior_states)), 1)
             reward_loss = -reward_dist.log_prob(rewards[:-1]).mean(dim=(0, 1))
             """
-            reward_loss = -bottle(reward_model.get_log_prob, {
-                                 'h_t': beliefs, 's_t': posterior_states, 'r_t': rewards[:-1]})
+            reward_loss = -bottle_dict(reward_model.get_log_prob, {
+                                 'h_t': beliefs, 's_t': posterior_states, 'r_t': rewards[:-1]}, None)
             reward_loss = reward_loss.mean(dim=(0, 1))
         else:
-            reward_mean = reward_model(
-                {'h_t': beliefs, 's_t': posterior_states})['loc']
-            T, B = beliefs.size[:2]
-            reward_mean = reward_mean.view(T, B, *reward_mean.size[1:])
+            reward_mean = bottle_tuple(reward_model, (beliefs, posterior_states), 'loc')
             reward_loss = F.mse_loss(reward_mean, rewards[:-1], reduction='none').mean(dim=(0, 1))
 
-        # transition loss
+        # transition loss(posteriorとpriorの間でKL_divergence計算する)　TODO: rewrite this
         div = kl_divergence(Normal(posterior_means, posterior_std_devs), Normal(
             prior_means, prior_std_devs)).sum(dim=2)
         # Note that normalisation by overshooting distance and weighting by overshooting distance cancel out
@@ -346,7 +337,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 prior_means, prior_std_devs)) * seq_mask).sum(dim=2), free_nats).mean(dim=(0, 1)) * (args.chunk_size - 1)  # Update KL loss (compensating for extra average over each overshooting/open loop sequence)
             # Calculate overshooting reward prediction loss with sequence mask
             if args.overshooting_reward_scale != 0:
-                reward_loss += (1 / args.overshooting_distance) * args.overshooting_reward_scale * F.mse_loss(bottle(reward_model, (beliefs, prior_states)) * seq_mask[:, :, 0], torch.cat(
+                reward_loss += (1 / args.overshooting_distance) * args.overshooting_reward_scale * F.mse_loss(bottle_tuple(reward_model, (beliefs, prior_states), 'loc') * seq_mask[:, :, 0], torch.cat(
                     overshooting_vars[2], dim=1), reduction='none').mean(dim=(0, 1)) * (args.chunk_size - 1)  # Update reward loss (compensating for extra average over each overshooting/open loop sequence)
         # Apply linearly ramping learning rate schedule
         if args.learning_rate_schedule != 0:
@@ -369,10 +360,11 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 actor_states, actor_beliefs, actor_model, transition_model, args.planning_horizon)
         imged_beliefs, imged_prior_states, imged_prior_means, imged_prior_std_devs = imagination_traj
         with FreezeParameters(model_modules + value_model.modules):
-            imged_reward = bottle(
-                reward_model, (imged_beliefs, imged_prior_states))
-            value_pred = bottle(
-                value_model, (imged_beliefs, imged_prior_states))
+            imged_reward = bottle_tuple(
+                reward_model, (imged_beliefs, imged_prior_states), 'loc')
+            #TODO: rewrite value model
+            value_pred = bottle_tuple(
+                value_model, (imged_beliefs, imged_prior_states), 'loc')
         returns = lambda_return(imged_reward, value_pred,
                                 bootstrap=value_pred[-1], discount=args.discount, lambda_=args.disclam)
         actor_loss = -torch.mean(returns)
@@ -389,9 +381,14 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
             value_prior_states = imged_prior_states.detach()
             target_return = returns.detach()
         # detach the input tensor from the transition network.
+        #TODO: rewrite this
+        """
         value_dist = Normal(
-            bottle(value_model, (value_beliefs, value_prior_states)), 1)
+            bottle_tuple(value_model, (value_beliefs, value_prior_states)), 1)
         value_loss = -value_dist.log_prob(target_return).mean(dim=(0, 1))
+        """
+        value_loss = - bottle_dict(value_model.get_log_prob, {'h_t': value_beliefs, 's_t': value_prior_states, 'r_t': target_return}) #TODO: add kwargs if necessary
+        value_loss = value_loss.mean(dim=(0, 1))
         # Update model parameters
         value_optimizer.zero_grad()
         value_loss.backward()
