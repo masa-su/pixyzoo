@@ -201,15 +201,15 @@ class LatentModel(nn.Module):
 
         # p(z1(t + 1) | z2(t), a(t))
         self.z1_prior = Gaussian(cond_var_dict={
-            "z_2^t": z2_dim, "a_t": num_action}, var_dict={"z_{t + 1}^1": z1_dim})
+            "z_t^2": z2_dim, "a_t": num_action}, var_dict={"z_{t + 1}^1": z1_dim})
 
         # p(z2(t+1) | z1(t+1), z2(t), a(t))
         self.z2_prior = Gaussian(cond_var_dict={
-            "z_{t + 1}^1": z1_dim, "z_2^t": z2_dim, "a_t": num_action}, var_dict={"z_{t + 1}^2": z2_dim})
+            "z_{t + 1}^1": z1_dim, "z_t^2": z2_dim, "a_t": num_action}, var_dict={"z_{t + 1}^2": z2_dim})
 
         # p(r(t) | z1(t), z2(t), a(t), z1(t+1), z2(t+1))
         self.reward_dist = Gaussian(cond_var_dict={
-                                    "z_1^t": z1_dim, "z_2^t": z2_dim, "z_{t + 1}^1": z1_dim, "z_{t + 1}^2": z2_dim, "a_t": num_action}, var_dict={"r_t": 1})
+                                    "z_t^1": z1_dim, "z_t^2": z2_dim, "z_{t + 1}^1": z1_dim, "z_{t + 1}^2": z2_dim, "a_t": num_action}, var_dict={"r_t": 1})
 
         # q(z1(0) | x1_encoded(0))
         self.z1_posterior_init = Gaussian(
@@ -217,7 +217,7 @@ class LatentModel(nn.Module):
 
         # q(z1(t+1) | x_encoded(t+1), z2(t), a(t))
         self.z1_posterior = Gaussian(
-            cond_var_dict={"x_encoded": encoded_obs_dim, "a_t": num_action, "z_2^t": z2_dim}, var_dict={"z_{t + 1}^1": z1_dim})
+            cond_var_dict={"x_encoded": encoded_obs_dim, "a_t": num_action, "z_t^2": z2_dim}, var_dict={"z_{t + 1}^1": z1_dim})
 
         self.z2_posterior_init = self.z2_prior_init
         self.z2_posterior = self.z2_prior
@@ -242,7 +242,7 @@ class LatentModel(nn.Module):
         loss_img = - self.decoder.get_log_prob(
             {'z_1': z1, 'z_2': z2, 'x_decoded': state}, sum_features=False).mean(dim=0)
         loss_reward = - self.reward_dist.get_log_prob(
-            {"z_1^t": z1[:, :-1], "z_2^t": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action, 'r_t': reward}, sum_features=False)
+            {"z_t^1": z1[:, :-1], "z_t^2": z2[:, :-1], "z_{t + 1}^1": z1[:, 1:], "z_{t + 1}^2": z2[:, 1:], "a_t": action, 'r_t': reward}, sum_features=False)
         loss_reward = loss_reward.mul_(1 - done).mean(dim=0)
         return loss_kld.sum(), loss_img.sum(), loss_reward.sum()
 
@@ -268,14 +268,14 @@ class LatentModel(nn.Module):
 
         for t in range(1, action.size(1) + 1):
             # q(z1(t) | x_encoded(t), z2(t-1), a(t-1))
-            z1 = self.z1_posterior.sample(
+            z1_pos = self.z1_posterior.sample(
                 {'x_encoded': x_encoded[:, t],
-                 'z_2^t': z2_pos,
+                 'z_t^2': z2_pos,
                  'a_t': action[:, t - 1]
                  })["z_{t + 1}^1"]
-            z2 = self.z2_posterior.sample(
+            z2_pos = self.z2_posterior.sample(
                 {"z_{t + 1}^1": z1_pos,
-                 "z_2^t": z2_pos,
+                 "z_t^2": z2_pos,
                  "a_t": action[:, t - 1]
                  })["z_{t + 1}^2"]
             z1_pos_list.append(z1_pos)
@@ -283,13 +283,13 @@ class LatentModel(nn.Module):
 
             # sampling from prior dist
             z1_pri = self.z1_prior.sample(
-                {"z_2^t": z2_pri, "a_t": action[:, t - 1]})["z_{t + 1}^1"]
+                {"z_t^2": z2_pri, "a_t": action[:, t - 1]})["z_{t + 1}^1"]
             z2_pri = self.z2_prior.sample(
-                {"z_{t + 1}^1": z1_pri, "z_2^t": z2_pri, "a_t": action[:, t - 1]})["z_{t + 1}^2"]
+                {"z_{t + 1}^1": z1_pri, "z_t^2": z2_pri, "a_t": action[:, t - 1]})["z_{t + 1}^2"]
 
             # calc KL Divergence
             loss += self.loss_kld.eval(
-                {"z_2^t": z2_pri, "a_t": action[:, t - 1], "x_encoded": x_encoded[:, t]})
+                {"z_t^2": z2_pri, "a_t": action[:, t - 1], "x_encoded": x_encoded[:, t]})
 
         return torch.stack(z1_pos_list, dim=1), torch.stack(z2_pos_list, dim=1), loss
 
@@ -319,6 +319,9 @@ class SLAC(nn.Module):
                             num_action=action_shape[0]).to(device)
         self.critic_target = QFunc(
             z1_dim=z1_dim, z2_dim=z2_dim, num_action=action_shape[0]).to(device)
+        for param in self.critic_target.parameters():
+            param.requires_grad = False
+
         self.actor = Actor(num_action=action_shape[0]).to(device)
         self.latent = LatentModel(
             num_action=action_shape[0], obs_shape=obs_shape).to(device)
