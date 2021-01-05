@@ -9,6 +9,14 @@ https://github.com/taesupkim/vta
 ### Download the dataset
 Google drive: https://drive.google.com/drive/u/2/folders/1cPdCyrUfHxkidTbkW790H4Jy9jLTonzr  
 
-please put this file in HRSSM directory
+please put 3dmaze_32.npy in HRSSM directory
 ### Run
-$ python train.py --seq-size 40 --seg-num 5 --seg-len 16
+$ python train_maze.py
+
+## Bouncing ball dataset
+### Download the dataset
+Google drive: https://drive.google.com/drive/u/2/folders/1cPdCyrUfHxkidTbkW790H4Jy9jLTonzr  
+
+please put bouncing_ball_black.npy in HRSSM directory
+### Run
+$ python train_bouncing_ball.py

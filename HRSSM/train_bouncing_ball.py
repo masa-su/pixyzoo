@@ -9,7 +9,7 @@ from torch.utils.tensorboard import SummaryWriter
 from hrssm import HRSSM
 import torch.optim as optim
 from utils import plot_rec, plot_gen
-from dataset import preprocess, postprocess, full_dataloader
+from dataset import preprocess, postprocess_bounce, bounce_dataloader
 from PIL import Image
 
 
@@ -38,7 +38,7 @@ def parse_args():
 
     # subsequence prior params
     parser.add_argument('--seg-num', type=int, default=5)
-    parser.add_argument('--seg-len', type=int, default=8)
+    parser.add_argument('--seg-len', type=int, default=10)
 
     # gumbel params
     parser.add_argument('--max-beta', type=float, default=1.0)
@@ -51,7 +51,7 @@ def parse_args():
 
 
 def set_exp_name(args):
-    exp_name = 'pixyz_hrssm_3dmaze'
+    exp_name = 'pixyz_hrssm_bounce'
     exp_name += '_b{}'.format(args.batch_size)
     exp_name += '_l{}_i{}'.format(args.seq_size, args.init_size)
     exp_name += '_b{}_s{}_c{}'.format(args.belief_size, args.state_size, args.num_layers)
@@ -84,7 +84,7 @@ def main():
     writer = SummaryWriter(args.log_dir + exp_name)
 
     # load dataset
-    train_loader, test_loader = full_dataloader(seq_size, init_size, args.batch_size)
+    train_loader, test_loader = bounce_dataloader(seq_size, init_size, args.batch_size)
 
     # init models
     hrssm_params = {'seq_size': args.seq_size, 'init_size': args.init_size,
@@ -124,14 +124,14 @@ def main():
             if b_idx % 1000 == 0:
                 # set data
                 pre_test_init_data_list = pre_test_full_data_list[:, :init_size]
-                post_test_init_data_list = postprocess(pre_test_init_data_list)
+                post_test_init_data_list = postprocess_bounce(pre_test_init_data_list)
                 pre_test_input_data_list = pre_test_full_data_list[:, init_size:(init_size + seq_size)]
-                post_test_input_data_list = postprocess(pre_test_input_data_list)
+                post_test_input_data_list = postprocess_bounce(pre_test_input_data_list)
 
                 with torch.no_grad():
                     # test data elbo
                     results = model.reconstruction(pre_test_full_data_list)
-                    post_test_rec_data_list = postprocess(results['rec_data'])
+                    post_test_rec_data_list = postprocess_bounce(results['rec_data'])
                     output_img, output_mask = plot_rec(post_test_init_data_list,
                                                        post_test_input_data_list,
                                                        post_test_rec_data_list,
@@ -147,7 +147,7 @@ def main():
                     
                     # full generation
                     pre_test_gen_data_list, test_mask_data_list = model.full_generation(pre_test_init_data_list, seq_size)
-                    post_test_gen_data_list = postprocess(pre_test_gen_data_list)
+                    post_test_gen_data_list = postprocess_bounce(pre_test_gen_data_list)
 
                     # log
                     output_img = plot_gen(post_test_init_data_list, post_test_gen_data_list, test_mask_data_list)
@@ -155,7 +155,7 @@ def main():
 
                     # jumpy imagination
                     pre_test_gen_data_list = model.jumpy_generation(pre_test_init_data_list, seq_size)
-                    post_test_gen_data_list = postprocess(pre_test_gen_data_list)
+                    post_test_gen_data_list = postprocess_bounce(pre_test_gen_data_list)
 
                     # log
                     output_img = plot_gen(post_test_init_data_list, post_test_gen_data_list)

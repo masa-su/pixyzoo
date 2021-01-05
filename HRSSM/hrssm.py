@@ -76,6 +76,7 @@ class HRSSM(Model):
         self.kl_obs_loss = KullbackLeibler(self.post_obs_state, self.prior_obs_state)
         self.kl_mask_loss = KullbackLeibler(self.post_boundary, self.prior_boundary)
         
+        loss = self.log_prob_loss + self.kl_abs_loss + self.kl_obs_loss + self.kl_mask_loss
         distributions = [
             self.enc_obs,
             self.post_boundary,
@@ -93,14 +94,9 @@ class HRSSM(Model):
             self.prior_boundary,
             self.dec_obs
         ]
-        self.distributions = nn.ModuleList(distributions)
 
-        # set params and optim
-        params = self.distributions.parameters()
-        self.optimizer = optimizer(params, **optimizer_params)
-
-        self.clip_norm = clip_grad_norm
-        self.clip_value = clip_grad_value
+        super().__init__(loss=loss, distributions=distributions, 
+                            optimizer=optimizer, optimizer_params=optimizer_params, clip_grad_norm=clip_grad_norm, clip_grad_value=clip_grad_value)
     
     # sampler
     def boundary_sampler(self, log_alpha):
