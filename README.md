@@ -17,7 +17,8 @@ This repository contains various deep generative models implemented in [Pixyz](h
 - [ ] WGAN
 - [x] Factor VAE
 - [ ] VGAN
-- [x] DynaNet
+- [x] DynaNet  
+- [x] HRSSM
 
 
 # How To Contribute
