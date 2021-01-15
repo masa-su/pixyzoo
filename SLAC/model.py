@@ -174,7 +174,7 @@ class Actor(nn.Module):
                       (num_seq - 1)*num_action, action_dim=num_action)
 
     def sample(self, x_encoded):
-        pi = self.pi.sample({'obs_and_action': x_encoded})["pi"]
+        pi = self.pi.sample({'obs_and_action': x_encoded}, reparam=True)["pi"]
         action = torch.tanh(pi)
         # log_prob = self.pi.dist.log_prob(action) + np.log(1 - action**2)
         log_prob = self.pi.get_log_prob(
@@ -252,12 +252,15 @@ class LatentModel(nn.Module):
 
         # sampling from posterior dist
         z1_pos = self.z1_posterior_init.sample(
-            {'x_encoded': x_encoded[:, 0]})['z_1']
-        z2_pos = self.z2_posterior_init.sample({'z_1': z1_pos})['z_2']
+            {'x_encoded': x_encoded[:, 0]}, reparam=True)['z_1']
+        z2_pos = self.z2_posterior_init.sample(
+            {'z_1': z1_pos}, reparam=True)['z_2']
 
         # sampling from prior dist
-        z1_pri = self.z1_prior_init.sample({'x': action[:, 0]})['z_1']
-        z2_pri = self.z2_prior_init.sample({'z_1': z1_pri})['z_2']
+        z1_pri = self.z1_prior_init.sample(
+            {'x': action[:, 0]}, reparam=True)['z_1']
+        z2_pri = self.z2_prior_init.sample(
+            {'z_1': z1_pri}, reparam=True)['z_2']
 
         z1_pos_list.append(z1_pos)
         z2_pos_list.append(z2_pos)
@@ -272,20 +275,22 @@ class LatentModel(nn.Module):
                 {'x_encoded': x_encoded[:, t],
                  'z_t^2': z2_pos,
                  'a_t': action[:, t - 1]
-                 })["z_{t + 1}^1"]
+                 },
+                reparam=True)["z_{t + 1}^1"]
             z2_pos = self.z2_posterior.sample(
                 {"z_{t + 1}^1": z1_pos,
                  "z_t^2": z2_pos,
                  "a_t": action[:, t - 1]
-                 })["z_{t + 1}^2"]
+                 },
+                reparam=True)["z_{t + 1}^2"]
             z1_pos_list.append(z1_pos)
             z2_pos_list.append(z2_pos)
 
             # sampling from prior dist
             z1_pri = self.z1_prior.sample(
-                {"z_t^2": z2_pri, "a_t": action[:, t - 1]})["z_{t + 1}^1"]
+                {"z_t^2": z2_pri, "a_t": action[:, t - 1]}, reparam=True)["z_{t + 1}^1"]
             z2_pri = self.z2_prior.sample(
-                {"z_{t + 1}^1": z1_pri, "z_t^2": z2_pri, "a_t": action[:, t - 1]})["z_{t + 1}^2"]
+                {"z_{t + 1}^1": z1_pri, "z_t^2": z2_pri, "a_t": action[:, t - 1]}, reparam=True)["z_{t + 1}^2"]
 
             # calc KL Divergence
             loss += self.loss_kld.eval(
