@@ -137,7 +137,8 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
             prior_states[t + 1] = prior_means[t + 1] + \
                 prior_std_devs[t + 1] * torch.randn_like(prior_means[t + 1])
             """
-            prior_states[t + 1] = self.stochastic_state_model.sample({'h_t': beliefs[t + 1]})["s_t"]
+            prior_states[t + 1] = self.stochastic_state_model.sample(
+                {'h_t': beliefs[t + 1]}, reparam=True)["s_t"]
             loc_and_scale = self.stochastic_state_model(h_t=beliefs[t + 1])
             prior_means[t + 1], prior_std_devs[t + 1] = loc_and_scale['loc'], loc_and_scale['scale']
 
@@ -157,7 +158,8 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
                     posterior_std_devs[t + 1] * \
                     torch.randn_like(posterior_means[t + 1])
                 """
-                posterior_states[t + 1] = self.obs_encoder.sample({'h_t': beliefs[t + 1], 'o_t': observations[t_ + 1]})['s_t']
+                posterior_states[t + 1] = self.obs_encoder.sample(
+                    {'h_t': beliefs[t + 1], 'o_t': observations[t_ + 1]}, reparam=True)['s_t']
                 loc_and_scale = self.obs_encoder(h_t=beliefs[t + 1], o_t=observations[t_ + 1])
                 posterior_means[t + 1] = loc_and_scale['loc']
                 posterior_std_devs[t + 1] = loc_and_scale['scale']
@@ -352,7 +354,8 @@ class ActorModel(nn.Module):
         if det:
             # get mode
             #TODO: check this
-            actions = self.pie.sample({'h_t':belief, 's_t': state}, sample_shape=[100])['a_t'] # (100, 2450, 6)
+            actions = self.pie.sample({'h_t': belief, 's_t': state}, sample_shape=[
+                                      100], reparam=True)['a_t']  # (100, 2450, 6)
             batch_size = actions.size(1)
             feature_size = actions.size(2)
             logprob = self.pie.get_log_prob({'h_t': belief, 's_t': state, 'a_t': actions}, sum_features=False) # (100, 2450, 6)
@@ -361,7 +364,7 @@ class ActorModel(nn.Module):
             return torch.gather(actions, 0, indices).squeeze(0)
 
         else:
-            return torch.tanh(self.pie.sample({'h_t': belief, 's_t': state})['a_t'])
+            return torch.tanh(self.pie.sample({'h_t': belief, 's_t': state}, reparam=True)['a_t'])
 
 
 class SymbolicEncoder(jit.ScriptModule):
