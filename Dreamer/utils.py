@@ -71,7 +71,8 @@ def imagine_ahead(prev_state, prev_belief, policy: ActorModel, transition_model:
     hidden = transition_model.act_fn(transition_model.fc_embed_belief_prior(beliefs[t + 1]))
     prior_means[t + 1], _prior_std_dev = torch.chunk(transition_model.fc_state_prior(hidden), 2, dim=1)
     """
-    prior_states[t + 1] = transition_model.stochastic_state_model.sample({'h_t': beliefs[t + 1]})['s_t']
+    prior_states[t + 1] = transition_model.stochastic_state_model.sample(
+        {'h_t': beliefs[t + 1]}, reparam=True)['s_t']
     loc_and_scale = transition_model.stochastic_state_model(h_t=beliefs[t + 1])
     prior_std_devs[t + 1] = loc_and_scale['scale']
     prior_means[t + 1] = loc_and_scale['loc']

@@ -289,7 +289,8 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
             observation_loss = observation_loss.sum(
                 dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
         else:
-            observation_mean = bottle_tuple(observation_model, (beliefs, posterior_states), 'loc')
+            observation_mean = bottle_tuple(
+                observation_model, (beliefs, posterior_states), 'loc')
             observation_loss = F.mse_loss(observation_mean, observations[1:], reduction='none').sum(
                 dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
 
@@ -471,7 +472,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 total_rewards += reward.numpy()
                 if not args.symbolic_env:  # Collect real vs. predicted frames for video
                     video_frames.append(make_grid(torch.cat([observation, observation_model(
-                        belief, posterior_state).cpu()], dim=3) + 0.5, nrow=5).numpy())  # Decentre
+                        belief, posterior_state)['loc'].cpu()], dim=3) + 0.5, nrow=5).numpy())  # Decentre
                 observation = next_observation
                 if done.sum().item() == args.test_episodes:
                     pbar.close()

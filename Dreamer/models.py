@@ -199,6 +199,7 @@ class ObsEncoder(Normal):
             h_size + embedding_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, 2 * s_size)
         self.min_std_dev = min_std_dev
+        self.modules = [self.fc1, self.fc2]
 
     def forward(self, h_t, o_t):
         hidden = self.activation(self.fc1(torch.cat([h_t, o_t], dim=1)))
@@ -396,7 +397,8 @@ class VisualEncoder(jit.ScriptModule):
         self.conv3 = nn.Conv2d(64, 128, 4, stride=2)
         self.conv4 = nn.Conv2d(128, 256, 4, stride=2)
         self.fc = nn.Identity() if embedding_size == 1024 else nn.Linear(1024, embedding_size)
-        self.modules = [self.conv1, self.conv2, self.conv3, self.conv4]
+        self.modules = [self.conv1, self.conv2,
+                        self.conv3, self.conv4, self.fc]
 
     @jit.script_method
     def forward(self, observation):
