@@ -180,7 +180,8 @@ class Actor(nn.Module):
         log_prob = self.pi.get_log_prob(
             {'obs_and_action': x_encoded, 'pi': pi}).reshape([-1, 1])
 
-        log_prob += torch.log(1 - action.pow(2) + 1e-6).sum(dim=-1, keepdim=True)
+        log_prob -= torch.log(1 - action.pow(2) +
+                              1e-6).sum(dim=-1, keepdim=True)
         return action, log_prob
 
     def act_greedy(self, x_encoded):
@@ -277,6 +278,7 @@ class LatentModel(nn.Module):
                  'a_t': action[:, t - 1]
                  },
                 reparam=True)["z_{t + 1}^1"]
+            # q(z2(t) | z1(t), z2(t-1), a(t-1))
             z2_pos = self.z2_posterior.sample(
                 {"z_{t + 1}^1": z1_pos,
                  "z_t^2": z2_pos,
