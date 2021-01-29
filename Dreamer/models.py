@@ -13,48 +13,19 @@ from typing import Dict
 
 # Wraps the input tuple for a function to process a (time, batch, features sequence in batch, features) (assumes one output)
 
-
-
-
-def bottle_dict(f, x_dict: Dict, var_name: str='', kwargs={}):
-    """
-    x_dict: {"Name of the variable": variable}
-    """
-    assert len(x_dict) >= 1
+def bottle_tuple(f, x_tuple, var_name: str = '', kwargs={}):
     # x_tuple: (T, B, features...)
-    x_sizes = tuple(map(lambda x: x.size(), x_dict.values()))
-    """
-    y = f(*map(lambda x: x[0].view(x[1][0] * x[1]
-                                   [1], *x[1][2:]), zip(x_dict.name, x_sizes)))
+    x_sizes = tuple(map(lambda x: x.size(), x_tuple))
+    y = f(*map(lambda x: x[0].view(x[1][0] * x[1][1],
+                                   *x[1][2:]), zip(x_tuple, x_sizes)), **kwargs)
+    if var_name != '':
+        y = y[var_name]
     # (T * B, features...)にしてからネットワークに食わせる(x.view(x_size[0] * x_size[1], * x_size[2:]))
-    """
     # x_tupleの中身はconcatしていない
-    feed_dict = {}
-    for name, tensor in x_dict.items():
-        T, B, feature_dims = tensor.size()[0], tensor.size()[1], tensor.size()[2:]
-        feed_dict[name] = tensor.view(T*B, *feature_dims)
-    if var_name == '':
-        y = f(feed_dict, **kwargs)
-    else:
-        y = f(feed_dict, **kwargs)[var_name] # apply a neural network
-    y_size = y.size() # (1, T * B, ...)
-    output = y.view(T, B, *y_size[2:])
+    y_size = y.size()
+    output = y.view(x_sizes[0][0], x_sizes[0][1], *y_size[1:])
     return output
-
-def bottle_tuple(f, x_tuple, var_name: str='', kwargs={}):
-  # x_tuple: (T, B, features...)
-  x_sizes = tuple(map(lambda x: x.size(), x_tuple))
-  y = f(*map(lambda x: x[0].view(x[1][0] * x[1][1], *x[1][2:]), zip(x_tuple, x_sizes)), **kwargs)
-  if var_name != '':
-      y = y[var_name]
-  # (T * B, features...)にしてからネットワークに食わせる(x.view(x_size[0] * x_size[1], * x_size[2:]))
-  # x_tupleの中身はconcatしていない
-  y_size = y.size()
-  output = y.view(x_sizes[0][0], x_sizes[0][1], *y_size[1:])
-  return output
-
 class TransitionModel(nn.Module):    # corresponds to RSSM?
-
     __constants__ = ['min_std_dev']
 
     def __init__(self, belief_size, state_size, action_size, hidden_size, embedding_size, activation_function='relu', min_std_dev=0.1):
@@ -84,10 +55,8 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
         self.obs_encoder = ObsEncoder(
             h_size=belief_size, s_size=state_size, activation=self.act_fn, embedding_size=embedding_size, hidden_size=hidden_size, min_std_dev=self.min_std_dev)
 
-        self.modules = [self.fc_embed_state_action, self.stochastic_state_model, self.obs_encoder]
-
-
-
+        self.modules = [self.fc_embed_state_action,
+                        self.stochastic_state_model, self.obs_encoder]
         # Operates over (previous) state, (previous) actions, (previous) belief, (previous) nonterminals (mask), and (current) observations
         # Diagram of expected inputs and outputs for T = 5 (-x- signifying beginning of output belief/state that gets sliced off):
         # t :  0  1  2  3  4  5
@@ -98,7 +67,6 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
         # ps: -X-
         # b : -x--X--X--X--X--X-
         # s : -x--X--X--X--X--X-
-
 
     def forward(self, prev_state: torch.Tensor, actions: torch.Tensor, prev_belief: torch.Tensor, observations: Optional[torch.Tensor] = None, nonterminals: Optional[torch.Tensor] = None) -> List[torch.Tensor]:
         '''
@@ -111,9 +79,9 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
         # Create lists for hidden states (cannot use single tensor as buffer because autograd won't work with inplace writes)
         T = actions.size(0) + 1
         beliefs, prior_states, prior_means, prior_std_devs, posterior_states, posterior_means, posterior_std_devs = \
-                        [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T
+            [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(
+                0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T
         beliefs[0], posterior_states[0], posterior_states[0] = prev_belief, prev_state, prev_state
-
 
         # Loop over time sequence
         for t in range(T - 1):
@@ -140,8 +108,8 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
             prior_states[t + 1] = self.stochastic_state_model.sample(
                 {'h_t': beliefs[t + 1]}, reparam=True)["s_t"]
             loc_and_scale = self.stochastic_state_model(h_t=beliefs[t + 1])
-            prior_means[t + 1], prior_std_devs[t + 1] = loc_and_scale['loc'], loc_and_scale['scale']
-
+            prior_means[t + 1], prior_std_devs[t +
+                                               1] = loc_and_scale['loc'], loc_and_scale['scale']
 
             if observations is not None:
                 # Compute state posterior by applying transition dynamics and using current observation
@@ -160,7 +128,8 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
                 """
                 posterior_states[t + 1] = self.obs_encoder.sample(
                     {'h_t': beliefs[t + 1], 'o_t': observations[t_ + 1]}, reparam=True)['s_t']
-                loc_and_scale = self.obs_encoder(h_t=beliefs[t + 1], o_t=observations[t_ + 1])
+                loc_and_scale = self.obs_encoder(
+                    h_t=beliefs[t + 1], o_t=observations[t_ + 1])
                 posterior_means[t + 1] = loc_and_scale['loc']
                 posterior_std_devs[t + 1] = loc_and_scale['scale']
 
@@ -184,10 +153,19 @@ class DenseDecoder(Normal):
         self.modules = [self.fc1, self.fc2, self.fc3]
 
     def forward(self, h_t, s_t):
+        # reshape inputs
+        (T, B), features_shape = h_t.size()[:2], h_t.size()[2:]
+        h_t = h_t.view(T*B, *features_shape)
+        (T, B), features_shape = s_t.size()[:2], s_t.size()[2:]
+        s_t = s_t.view(T*B, *features_shape)
+
         hidden = self.act_fn(self.fc1(torch.cat([h_t, s_t], dim=1)))
         hidden = self.act_fn(self.fc2(hidden))
         observation = self.fc3(hidden)
+        features_shape = observation.size()[1:]
+        observation = observation.view(T, B, *features_shape)
         return {'loc': observation, 'scale': 1.0}
+
 
 class ObsEncoder(Normal):
     """o_t ~ p(o_t | h_t, s_t)"""
@@ -207,13 +185,15 @@ class ObsEncoder(Normal):
         scale = F.softplus(scale) + self.min_std_dev
         return {"loc": loc, "scale": scale}
 
+
 class StochasticStateModel(Normal):
     """p(s_t | h_t)"""
+
     def __init__(self, h_size, hidden_size, activation, s_size, min_std_dev):
 
-        super().__init__(var=['s_t'], cond_var=['h_t'], name="StochasticStateModel")
-        self.fc1 = nn.Linear(h_size, hidden_size
-            )
+        super().__init__(var=['s_t'], cond_var=[
+            'h_t'], name="StochasticStateModel")
+        self.fc1 = nn.Linear(h_size, hidden_size)
         self.fc2 = nn.Linear(hidden_size, 2 * s_size)
         self.activation = activation
         self.min_std_dev = min_std_dev
@@ -242,6 +222,13 @@ class ConvDecoder(Normal):
                         self.conv2, self.conv3, self.conv4]
 
     def forward(self, h_t, s_t):
+        # reshape input tensors
+        (T, B), features_shape = h_t.size()[:2], h_t.size()[2:]
+        h_t = h_t.view(T*B, *features_shape)
+
+        (T, B), features_shape = s_t.size()[:2], s_t.size()[2:]
+        s_t = s_t.view(T*B, *features_shape)
+
         # No nonlinearity here
         hidden = self.fc1(torch.cat([h_t, s_t], dim=1))
         hidden = hidden.view(-1, self.embedding_size, 1, 1)
@@ -249,6 +236,8 @@ class ConvDecoder(Normal):
         hidden = self.act_fn(self.conv2(hidden))
         hidden = self.act_fn(self.conv3(hidden))
         observation = self.conv4(hidden)
+        features_shape = observation.size()[1:]
+        observation = observation.view(T, B, *features_shape)
         return {'loc': observation, 'scale': 1.0}
 
 
@@ -271,10 +260,19 @@ class RewardModel(Normal):
         self.modules = [self.fc1, self.fc2, self.fc3]
 
     def forward(self, h_t, s_t):
+        # reshape input tensors
+        (T, B), features_shape = h_t.size()[:2], h_t.size()[2:]
+        h_t = h_t.view(T*B, *features_shape)
+
+        (T, B), features_shape = s_t.size()[:2], s_t.size()[2:]
+        s_t = s_t.view(T*B, *features_shape)
+
         x = torch.cat([h_t, s_t], dim=1)
         hidden = self.act_fn(self.fc1(x))
         hidden = self.act_fn(self.fc2(hidden))
         reward = self.fc3(hidden).squeeze(dim=1)
+        features_shape = reward.size()[1:]
+        reward = reward.view(T, B, *features_shape)
         scale = torch.ones_like(reward)
         return {'loc': reward, 'scale': scale}
 
@@ -290,11 +288,20 @@ class ValueModel(Normal):
         self.modules = [self.fc1, self.fc2, self.fc3, self.fc4]
 
     def forward(self, h_t, s_t):
+        # reshape input tensors
+        (T, B), features_shape = h_t.size()[:2], h_t.size()[2:]
+        h_t = h_t.view(T*B, *features_shape)
+
+        (T, B), features_shape = s_t.size()[:2], s_t.size()[2:]
+        s_t = s_t.view(T*B, *features_shape)
+
         x = torch.cat([h_t, s_t], dim=1)
         hidden = self.act_fn(self.fc1(x))
         hidden = self.act_fn(self.fc2(hidden))
         hidden = self.act_fn(self.fc3(hidden))
         loc = self.fc4(hidden).squeeze(dim=1)
+        features_shape = loc.size()[1:]
+        loc = loc.view(T, B, *features_shape)
         scale = torch.ones_like(loc)
         return {'loc': loc, 'scale': scale}
 
@@ -317,7 +324,8 @@ class Pie(Normal):
         self._mean_scale = mean_scale
 
     def forward(self, h_t, s_t):
-        raw_init_std = torch.log(torch.exp(torch.tensor(self._init_std, dtype=torch.float32)) - 1)
+        raw_init_std = torch.log(torch.exp(torch.tensor(
+            self._init_std, dtype=torch.float32)) - 1)
         x = torch.cat([h_t, s_t], dim=1)
         hidden = self.act_fn(self.fc1(x))
         hidden = self.act_fn(self.fc2(hidden))
@@ -343,25 +351,29 @@ class Pie(Normal):
         else:
             return dist.rsample()
     """
+
+
 class ActorModel(nn.Module):
     def __init__(self, belief_size, state_size, hidden_size, action_size, dist='tanh_normal',
                  activation_function='elu', min_std=1e-4, init_std=5, mean_scale=5):
         super().__init__()
         self.pie = Pie(belief_size, state_size, hidden_size, action_size, dist='tanh_normal',
-                 activation_function='elu', min_std=1e-4, init_std=5, mean_scale=5)
+                       activation_function='elu', min_std=1e-4, init_std=5, mean_scale=5)
 
     def get_action(self, belief, state, det=False):
-        #TODO: check lines below
+        # TODO: check lines below
         if det:
             # get mode
-            #TODO: check this
+            # TODO: check this
             actions = self.pie.sample({'h_t': belief, 's_t': state}, sample_shape=[
                                       100], reparam=True)['a_t']  # (100, 2450, 6)
             batch_size = actions.size(1)
             feature_size = actions.size(2)
-            logprob = self.pie.get_log_prob({'h_t': belief, 's_t': state, 'a_t': actions}, sum_features=False) # (100, 2450, 6)
+            logprob = self.pie.get_log_prob(
+                {'h_t': belief, 's_t': state, 'a_t': actions}, sum_features=False)  # (100, 2450, 6)
             logprob = logprob.sum(dim=-1)
-            indices = torch.argmax(logprob, dim=0).reshape(1, batch_size, 1).expand(1, batch_size, feature_size)
+            indices = torch.argmax(logprob, dim=0).reshape(
+                1, batch_size, 1).expand(1, batch_size, feature_size)
             return torch.gather(actions, 0, indices).squeeze(0)
 
         else:
@@ -450,6 +462,7 @@ class TanhBijector(torch.distributions.Transform):
         return 2. * (np.log(2) - x - F.softplus(-2. * x))
     """
 
+
 class SampleDist:
     def __init__(self, dist, samples=100):
         self._dist = dist
@@ -467,7 +480,8 @@ class SampleDist:
         return torch.mean(sample, 0)
 
     def mode(self):
-        dist = self._dist.expand((self._samples, *self._dist.batch_shape)) # サンプル数, B
+        dist = self._dist.expand(
+            (self._samples, *self._dist.batch_shape))  # サンプル数, B
         sample = dist.rsample()
         logprob = dist.log_prob(sample)
         batch_size = sample.size(1)

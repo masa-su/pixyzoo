@@ -1,6 +1,7 @@
 import argparse
 import os
 import numpy as np
+from numpy.core.fromnumeric import compress
 import torch
 from torch import nn, optim
 from torch.distributions import Normal
@@ -10,7 +11,7 @@ from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
 from env import CONTROL_SUITE_ENVS, Env, GYM_ENVS, EnvBatcher
 from memory import ExperienceReplay
-from models import bottle_tuple, bottle_dict, Encoder, ObservationModel, RewardModel, TransitionModel, ValueModel, ActorModel
+from models import bottle_tuple, Encoder, ObservationModel, RewardModel, TransitionModel, ValueModel, ActorModel
 from planner import MPCPlanner
 from utils import lineplot, write_video, imagine_ahead, lambda_return, FreezeParameters, ActivateParameters
 from tensorboardX import SummaryWriter
@@ -284,13 +285,13 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
             observation_loss = -observation_dist.log_prob(observations[1:]).sum(
                 dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
             """
-            observation_loss = -bottle_dict(observation_model.get_log_prob, {
-                'h_t': beliefs, 's_t': posterior_states, 'o_t': observations[1:]}, None, kwargs={'sum_features': False})
+            observation_loss = - observation_model.get_log_prob(
+                {'h_t': beliefs, 's_t': posterior_states, 'o_t': observations[1:]}, sum_features=False)
             observation_loss = observation_loss.sum(
                 dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
         else:
-            observation_mean = bottle_tuple(
-                observation_model, (beliefs, posterior_states), 'loc')
+            observation_mean = observation_model(
+                h_t=beliefs, s_t=posterior_states)['loc']
             observation_loss = F.mse_loss(observation_mean, observations[1:], reduction='none').sum(
                 dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
 
@@ -300,11 +301,12 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 bottle(reward_model, (beliefs, posterior_states)), 1)
             reward_loss = -reward_dist.log_prob(rewards[:-1]).mean(dim=(0, 1))
             """
-            reward_loss = -bottle_dict(reward_model.get_log_prob, {
-                                 'h_t': beliefs, 's_t': posterior_states, 'r_t': rewards[:-1]}, None)
+            reward_loss = -reward_model.get_log_prob(
+                {'h_t': beliefs, 's_t': posterior_states, 'r_t': rewards[:-1]}, sum_features=False)
             reward_loss = reward_loss.mean(dim=(0, 1))
         else:
-            reward_mean = bottle_tuple(reward_model, (beliefs, posterior_states), 'loc')
+            reward_mean = reward_model(
+                h_t=beliefs, s_t=posterior_states)['loc']
             reward_loss = F.mse_loss(reward_mean, rewards[:-1], reduction='none').mean(dim=(0, 1))
 
         # transition loss(posteriorとpriorの間でKL_divergence計算する)　TODO: rewrite this
@@ -338,7 +340,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 prior_means, prior_std_devs)) * seq_mask).sum(dim=2), free_nats).mean(dim=(0, 1)) * (args.chunk_size - 1)  # Update KL loss (compensating for extra average over each overshooting/open loop sequence)
             # Calculate overshooting reward prediction loss with sequence mask
             if args.overshooting_reward_scale != 0:
-                reward_loss += (1 / args.overshooting_distance) * args.overshooting_reward_scale * F.mse_loss(bottle_tuple(reward_model, (beliefs, prior_states), 'loc') * seq_mask[:, :, 0], torch.cat(
+                reward_loss += (1 / args.overshooting_distance) * args.overshooting_reward_scale * F.mse_loss(reward_model(beliefs, prior_states)['loc'] * seq_mask[:, :, 0], torch.cat(
                     overshooting_vars[2], dim=1), reduction='none').mean(dim=(0, 1)) * (args.chunk_size - 1)  # Update reward loss (compensating for extra average over each overshooting/open loop sequence)
         # Apply linearly ramping learning rate schedule
         if args.learning_rate_schedule != 0:
@@ -361,11 +363,11 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 actor_states, actor_beliefs, actor_model, transition_model, args.planning_horizon)
         imged_beliefs, imged_prior_states, imged_prior_means, imged_prior_std_devs = imagination_traj
         with FreezeParameters(model_modules + value_model.modules):
-            imged_reward = bottle_tuple(
-                reward_model, (imged_beliefs, imged_prior_states), 'loc')
+            imged_reward = reward_model(
+                h_t=imged_beliefs, s_t=imged_prior_states)['loc']
             #TODO: rewrite value model
-            value_pred = bottle_tuple(
-                value_model, (imged_beliefs, imged_prior_states), 'loc')
+            value_pred = value_model(
+                h_t=imged_beliefs, s_t=imged_prior_states)['loc']
         returns = lambda_return(imged_reward, value_pred,
                                 bootstrap=value_pred[-1], discount=args.discount, lambda_=args.disclam)
         actor_loss = -torch.mean(returns)
@@ -388,7 +390,8 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
             bottle_tuple(value_model, (value_beliefs, value_prior_states)), 1)
         value_loss = -value_dist.log_prob(target_return).mean(dim=(0, 1))
         """
-        value_loss = - bottle_dict(value_model.get_log_prob, {'h_t': value_beliefs, 's_t': value_prior_states, 'r_t': target_return}) #TODO: add kwargs if necessary
+        value_loss = - value_model.get_log_prob(
+            {'h_t': value_beliefs, 's_t': value_prior_states, 'r_t': target_return}, sum_features=False)
         value_loss = value_loss.mean(dim=(0, 1))
         # Update model parameters
         value_optimizer.zero_grad()
