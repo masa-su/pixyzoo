@@ -50,7 +50,7 @@ class Encoder(nn.Module):
 
 
 class Decoder(Normal):
-    def __init__(self, input_dim=z_dim, std=0.1):
+    def __init__(self, input_dim=z_dim, std=np.sqrt(0.1)):
         """Decodes z into an observation"""
         super().__init__(
             cond_var=['z_1', 'z_2'], var=['x_decoded'])
@@ -95,7 +95,7 @@ class Gaussian(Normal):
             nn.Linear(in_dim, 256),
             nn.LeakyReLU(),
             nn.Linear(256, list(var_dict.values())[0]*2)
-        )
+        ).apply(initialize_weight)
         self.inputs = cond_var_dict.keys()
 
     def forward(self, **kwargs):
@@ -126,6 +126,7 @@ class FixedGaussian(Normal):
                            device=x.device).mul_(self.std)
         return {'loc': loc, 'scale': scale}
 
+
 class QFunc(nn.Module):
     def __init__(self, z1_dim, z2_dim, num_action: int):
         super(QFunc, self).__init__()
@@ -136,14 +137,15 @@ class QFunc(nn.Module):
             nn.Linear(256, 256),
             nn.ReLU(),
             nn.Linear(256, 1)
-        )
+        ).apply(initialize_weight)
+
         self.network2 = nn.Sequential(
             nn.Linear(input_dim, 256),
             nn.ReLU(),
             nn.Linear(256, 256),
             nn.ReLU(),
             nn.Linear(256, 1)
-        )
+        ).apply(initialize_weight)
 
     def forward(self, z, action_t_1):
         inputs = torch.cat([z, action_t_1], dim=1)
@@ -156,9 +158,10 @@ class Pie(Normal):
             cond_var=["obs_and_action"], var=['pi'])
         self.fcs = nn.Sequential(
             nn.Linear(in_dim, 256),
-            nn.LeakyReLU(),
-            nn.Linear(256, 2*action_dim)
-        )
+            nn.ReLU(),
+            nn.Linear(256, 2*action_dim),
+            nn.ReLU()
+        ).apply(initialize_weight)
 
     def forward(self, obs_and_action):
         loc, log_scale = torch.chunk(self.fcs(obs_and_action), 2, dim=-1)
@@ -223,18 +226,13 @@ class LatentModel(nn.Module):
         self.z2_posterior_init = self.z2_prior_init
         self.z2_posterior = self.z2_prior
 
-        # self.apply(initialize_weight)
-
         # KL Divergence
         self.loss_kld_init = KullbackLeibler(
-            self.z1_posterior_init, self.z1_prior_init)
-        self.loss_kld = KullbackLeibler(self.z1_posterior, self.z1_prior)
+            self.z1_posterior_init, self.z1_prior_init, analytical=True)
+        self.loss_kld = KullbackLeibler(
+            self.z1_posterior, self.z1_prior, analytical=True)
 
-        distributions = [self.z1_prior_init, self.z2_prior_init, self.z1_prior, self.z2_prior,
-                         self.reward_dist, self.z1_posterior_init, self.z1_posterior_init,
-                         self.z1_posterior, self.z2_posterior_init, self.z2_posterior]
-        self.parameters = nn.ModuleList(distributions).parameters()
-        initialize_weight(self.parameters)
+        self.apply(initialize_weight)
 
     def calculate_loss(self, state, action, reward, done):
         x_encoded = self.encoder(state)
@@ -297,7 +295,7 @@ class LatentModel(nn.Module):
             # calc KL Divergence
             loss += self.loss_kld.eval(
                 {"z_t^2": z2_pri, "a_t": action[:, t - 1], "x_encoded": x_encoded[:, t]})
-
+        loss = (loss / (action.size(1) + 1)).mean(dim=0)
         return torch.stack(z1_pos_list, dim=1), torch.stack(z2_pos_list, dim=1), loss
 
 
@@ -326,6 +324,7 @@ class SLAC(nn.Module):
                             num_action=action_shape[0]).to(device)
         self.critic_target = QFunc(
             z1_dim=z1_dim, z2_dim=z2_dim, num_action=action_shape[0]).to(device)
+        soft_update(self.critic_target, self.critic, 1.0)
         for param in self.critic_target.parameters():
             param.requires_grad = False
 
@@ -344,7 +343,7 @@ class SLAC(nn.Module):
         self.optim_actor = Adam(self.actor.pi.parameters(), lr=lr_sac)
         self.optim_critic = Adam(self.critic.parameters(), lr=lr_sac)
         self.optim_alpha = Adam([self.log_alpha], lr=lr_sac)
-        self.optim_latent = Adam(self.latent.parameters, lr=lr_latent)
+        self.optim_latent = Adam(self.latent.parameters(), lr=lr_latent)
 
         self.buffer = ReplayBuffer(
             buffer_size, num_sequences, obs_shape, action_shape, device)
