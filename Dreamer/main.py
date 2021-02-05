@@ -473,9 +473,11 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 belief, posterior_state, action, next_observation, reward, done = update_belief_and_act(
                     args, test_envs, planner, transition_model, encoder, belief, posterior_state, action, observation.to(device=args.device))
                 total_rewards += reward.numpy()
+                """
                 if not args.symbolic_env:  # Collect real vs. predicted frames for video
                     video_frames.append(make_grid(torch.cat([observation, observation_model(
                         belief, posterior_state)['loc'].cpu()], dim=3) + 0.5, nrow=5).numpy())  # Decentre
+                """
                 observation = next_observation
                 if done.sum().item() == args.test_episodes:
                     pbar.close()
@@ -490,10 +492,12 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                  metrics['test_rewards'], 'test_rewards_steps', results_dir, xaxis='step')
         if not args.symbolic_env:
             episode_str = str(episode).zfill(len(str(args.episodes)))
+            """
             write_video(video_frames, 'test_episode_%s' %
                         episode_str, results_dir)  # Lossy compression
             save_image(torch.as_tensor(
                 video_frames[-1]), os.path.join(results_dir, 'test_episode_%s.png' % episode_str))
+            """
         torch.save(metrics, os.path.join(results_dir, 'metrics.pth'))
 
         # Set models to train mode
