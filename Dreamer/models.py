@@ -357,8 +357,8 @@ class ActorModel(nn.Module):
     def __init__(self, belief_size, state_size, hidden_size, action_size, dist='tanh_normal',
                  activation_function='elu', min_std=1e-4, init_std=5, mean_scale=5):
         super().__init__()
-        self.pie = Pie(belief_size, state_size, hidden_size, action_size, dist='tanh_normal',
-                       activation_function='elu', min_std=1e-4, init_std=5, mean_scale=5)
+        self.pie = Pie(belief_size, state_size, hidden_size, action_size, dist=dist,
+                       activation_function=activation_function, min_std=min_std, init_std=init_std, mean_scale=mean_scale)
 
     def get_action(self, belief, state, det=False):
         # TODO: check lines below
@@ -371,6 +371,7 @@ class ActorModel(nn.Module):
             feature_size = actions.size(2)
             logprob = self.pie.get_log_prob(
                 {'h_t': belief, 's_t': state, 'a_t': actions}, sum_features=False)  # (100, 2450, 6)
+            logprob -= torch.log(1 - actions.pow(2) + 1e-6)
             logprob = logprob.sum(dim=-1)
             indices = torch.argmax(logprob, dim=0).reshape(
                 1, batch_size, 1).expand(1, batch_size, feature_size)
