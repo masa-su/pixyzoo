@@ -56,7 +56,7 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
             h_size=belief_size, s_size=state_size, activation=self.act_fn, embedding_size=embedding_size, hidden_size=hidden_size, min_std_dev=self.min_std_dev)
 
         self.modules = [self.fc_embed_state_action,
-                        self.stochastic_state_model, self.obs_encoder]
+                        self.stochastic_state_model, self.obs_encoder, self.rnn]
         # Operates over (previous) state, (previous) actions, (previous) belief, (previous) nonterminals (mask), and (current) observations
         # Diagram of expected inputs and outputs for T = 5 (-x- signifying beginning of output belief/state that gets sliced off):
         # t :  0  1  2  3  4  5
