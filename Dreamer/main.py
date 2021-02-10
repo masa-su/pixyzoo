@@ -177,10 +177,13 @@ actor_model = ActorModel(args.belief_size, args.state_size, args.hidden_size,
                          env.action_size, args.dense_activation_function).to(device=args.device)
 value_model = ValueModel(args.belief_size, args.state_size, args.hidden_size,
                          args.dense_activation_function).to(device=args.device)
-param_list = list(transition_model.parameters()) + list(observation_model.parameters()
-                                                        ) + list(reward_model.parameters()) + list(encoder.parameters())
+param_list = list(transition_model.parameters()) \
+    + list(observation_model.parameters()) \
+    + list(reward_model.parameters()) \
+    + list(encoder.parameters())
 value_actor_param_list = list(
-    value_model.parameters()) + list(actor_model.parameters())
+    value_model.parameters()) \
+    + list(actor_model.parameters())
 params_list = param_list + value_actor_param_list
 model_optimizer = optim.Adam(param_list, lr=0 if args.learning_rate_schedule !=
                              0 else args.model_learning_rate, eps=args.adam_epsilon)
@@ -224,7 +227,7 @@ def update_belief_and_act(args, env, planner, transition_model, encoder, belief,
     if explore:
         # Add gaussian exploration noise on top of the sampled action
         action = torch.clamp(
-            Normal(action, args.action_noise).rsample(), -1, 1) #TODO: rewrite this line
+            Normal(action, args.action_noise).rsample(), -1, 1)
         # action = action + args.action_noise * torch.randn_like(action)  # Add exploration noise ε ~ p(ε) to the action
     next_observation, reward, done = env.step(action.cpu() if isinstance(
         env, EnvBatcher) else action[0].cpu())  # Perform environment step (action repeats handled internally)
@@ -279,12 +282,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
 
         # Calculate observation likelihood, reward likelihood and KL losses (for t = 0 only for latent overshooting); sum over final dims, average over batch and time (original implementation, though paper seems to miss 1/T scaling?)
         if args.worldmodel_LogProbLoss:
-            """
-            observation_dist = Normal(
-                bottle(observation_model, (beliefs, posterior_states)), 1)
-            observation_loss = -observation_dist.log_prob(observations[1:]).sum(
-                dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
-            """
             observation_loss = - observation_model.get_log_prob(
                 {'h_t': beliefs, 's_t': posterior_states, 'o_t': observations[1:]}, sum_features=False)
             observation_loss = observation_loss.sum(
@@ -296,11 +293,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 dim=2 if args.symbolic_env else (2, 3, 4)).mean(dim=(0, 1))
 
         if args.worldmodel_LogProbLoss:
-            """
-            reward_dist = Normal(
-                bottle(reward_model, (beliefs, posterior_states)), 1)
-            reward_loss = -reward_dist.log_prob(rewards[:-1]).mean(dim=(0, 1))
-            """
             reward_loss = -reward_model.get_log_prob(
                 {'h_t': beliefs, 's_t': posterior_states, 'r_t': rewards[:-1]}, sum_features=False)
             reward_loss = reward_loss.mean(dim=(0, 1))
@@ -365,7 +357,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         with FreezeParameters(model_modules + value_model.modules):
             imged_reward = reward_model(
                 h_t=imged_beliefs, s_t=imged_prior_states)['loc']
-            #TODO: rewrite value model
             value_pred = value_model(
                 h_t=imged_beliefs, s_t=imged_prior_states)['loc']
         returns = lambda_return(imged_reward, value_pred,
@@ -384,12 +375,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
             value_prior_states = imged_prior_states.detach()
             target_return = returns.detach()
         # detach the input tensor from the transition network.
-        #TODO: rewrite this
-        """
-        value_dist = Normal(
-            bottle_tuple(value_model, (value_beliefs, value_prior_states)), 1)
-        value_loss = -value_dist.log_prob(target_return).mean(dim=(0, 1))
-        """
         value_loss = - value_model.get_log_prob(
             {'h_t': value_beliefs, 's_t': value_prior_states, 'r_t': target_return}, sum_features=False)
         value_loss = value_loss.mean(dim=(0, 1))

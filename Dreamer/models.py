@@ -9,9 +9,10 @@ from torch.distributions.transformed_distribution import TransformedDistribution
 import numpy as np
 
 from pixyz.distributions import Normal
-from typing import Dict
+from typing import Dict, Union
 
 # Wraps the input tuple for a function to process a (time, batch, features sequence in batch, features) (assumes one output)
+
 
 def bottle_tuple(f, x_tuple, var_name: str = '', kwargs={}):
     # x_tuple: (T, B, features...)
@@ -25,7 +26,9 @@ def bottle_tuple(f, x_tuple, var_name: str = '', kwargs={}):
     y_size = y.size()
     output = y.view(x_sizes[0][0], x_sizes[0][1], *y_size[1:])
     return output
-class TransitionModel(nn.Module):    # corresponds to RSSM?
+
+
+class TransitionModel(nn.Module):
     __constants__ = ['min_std_dev']
 
     def __init__(self, belief_size, state_size, action_size, hidden_size, embedding_size, activation_function='relu', min_std_dev=0.1):
@@ -35,18 +38,6 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
         self.fc_embed_state_action = nn.Linear(
             state_size + action_size, belief_size)
         self.rnn = nn.GRUCell(belief_size, belief_size)
-        """
-        # p(s_t | h_t)
-        self.fc_embed_belief_prior = nn.Linear(belief_size, hidden_size)
-        self.fc_state_prior = nn.Linear(hidden_size, 2 * state_size)
-        """
-
-        """
-        # p(o_t | h_t, s_t)
-        self.fc_embed_belief_posterior = nn.Linear(
-            belief_size + embedding_size, hidden_size)
-        self.fc_state_posterior = nn.Linear(hidden_size, 2 * state_size)
-        """
 
         # pixyz dists
         self.stochastic_state_model = StochasticStateModel(
@@ -97,14 +88,6 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
 
             # Compute state prior by applying transition dynamics
             # s_t ~ p(s_t | h_t) (Stochastic State Model)
-            """
-            hidden = self.act_fn(self.fc_embed_belief_prior(beliefs[t + 1]))
-            prior_means[t + 1], _prior_std_dev = torch.chunk(
-                self.fc_state_prior(hidden), 2, dim=1)
-            prior_std_devs[t +1] = F.softplus(_prior_std_dev) + self.min_std_dev
-            prior_states[t + 1] = prior_means[t + 1] + \
-                prior_std_devs[t + 1] * torch.randn_like(prior_means[t + 1])
-            """
             prior_states[t + 1] = self.stochastic_state_model.sample(
                 {'h_t': beliefs[t + 1]}, reparam=True)["s_t"]
             loc_and_scale = self.stochastic_state_model(h_t=beliefs[t + 1])
@@ -115,17 +98,6 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
                 # Compute state posterior by applying transition dynamics and using current observation
                 # s_t ~ q(s_t | h_t, o_t) (Observation Model)
                 t_ = t - 1  # Use t_ to deal with different time indexing for observations
-                """
-                hidden = self.act_fn(self.fc_embed_belief_posterior(
-                    torch.cat([beliefs[t + 1], observations[t_ + 1]], dim=1)))
-                posterior_means[t + 1], _posterior_std_dev = torch.chunk(
-                    self.fc_state_posterior(hidden), 2, dim=1)
-                posterior_std_devs[t +
-                                    1] = F.softplus(_posterior_std_dev) + self.min_std_dev
-                posterior_states[t + 1] = posterior_means[t + 1] + \
-                    posterior_std_devs[t + 1] * \
-                    torch.randn_like(posterior_means[t + 1])
-                """
                 posterior_states[t + 1] = self.obs_encoder.sample(
                     {'h_t': beliefs[t + 1], 'o_t': observations[t_ + 1]}, reparam=True)['s_t']
                 loc_and_scale = self.obs_encoder(
@@ -142,9 +114,8 @@ class TransitionModel(nn.Module):    # corresponds to RSSM?
         return hidden
 
 
-# class SymbolicObservationModel(jit.ScriptModule):
 class DenseDecoder(Normal):
-    def __init__(self, observation_size, belief_size, state_size, embedding_size, activation_function='relu'):
+    def __init__(self, observation_size: torch.Tensor, belief_size: torch.Tensor, state_size: int, embedding_size: int, activation_function: str =      'relu'):
         super().__init__(var=['o_t'], cond_var=['h_t', 's_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, embedding_size)
@@ -152,7 +123,7 @@ class DenseDecoder(Normal):
         self.fc3 = nn.Linear(embedding_size, observation_size)
         self.modules = [self.fc1, self.fc2, self.fc3]
 
-    def forward(self, h_t, s_t):
+    def forward(self, h_t, s_t) -> Dict:
         # reshape inputs
         (T, B), features_shape = h_t.size()[:2], h_t.size()[2:]
         h_t = h_t.view(T*B, *features_shape)
@@ -169,7 +140,8 @@ class DenseDecoder(Normal):
 
 class ObsEncoder(Normal):
     """o_t ~ p(o_t | h_t, s_t)"""
-    def __init__(self, h_size, s_size, activation, embedding_size, hidden_size, min_std_dev):
+
+    def __init__(self, h_size: int, s_size: int, activation: nn.Module, embedding_size: int, hidden_size: int, min_std_dev: float):
 
         super().__init__(var=["s_t"], cond_var=["h_t", "o_t"])
         self.activation = activation
@@ -179,7 +151,7 @@ class ObsEncoder(Normal):
         self.min_std_dev = min_std_dev
         self.modules = [self.fc1, self.fc2]
 
-    def forward(self, h_t, o_t):
+    def forward(self, h_t: torch.Tensor, o_t: torch.Tensor) -> Dict:
         hidden = self.activation(self.fc1(torch.cat([h_t, o_t], dim=1)))
         loc, scale = torch.chunk(self.fc2(hidden), 2, dim=1)
         scale = F.softplus(scale) + self.min_std_dev
@@ -189,7 +161,7 @@ class ObsEncoder(Normal):
 class StochasticStateModel(Normal):
     """p(s_t | h_t)"""
 
-    def __init__(self, h_size, hidden_size, activation, s_size, min_std_dev):
+    def __init__(self, h_size: int, hidden_size: int, activation: nn.Module, s_size: int, min_std_dev: float):
 
         super().__init__(var=['s_t'], cond_var=[
             'h_t'], name="StochasticStateModel")
@@ -198,7 +170,7 @@ class StochasticStateModel(Normal):
         self.activation = activation
         self.min_std_dev = min_std_dev
 
-    def forward(self, h_t):
+    def forward(self, h_t) -> Dict:
         hidden = self.activation(self.fc1(h_t))
         loc, scale = torch.chunk(
             self.fc2(hidden), 2, dim=1)
@@ -209,7 +181,7 @@ class StochasticStateModel(Normal):
 class ConvDecoder(Normal):
     __constants__ = ['embedding_size']
 
-    def __init__(self, belief_size, state_size, embedding_size, activation_function='relu'):
+    def __init__(self, belief_size: int, state_size: int, embedding_size: int, activation_function: str =      'relu'):
         super().__init__(var=['o_t'], cond_var=['h_t', 's_t'])
         self.act_fn = getattr(F, activation_function)
         self.embedding_size = embedding_size
@@ -221,7 +193,7 @@ class ConvDecoder(Normal):
         self.modules = [self.fc1, self.conv1,
                         self.conv2, self.conv3, self.conv4]
 
-    def forward(self, h_t, s_t):
+    def forward(self, h_t: torch.Tensor, s_t: torch.Tensor) -> Dict:
         # reshape input tensors
         (T, B), features_shape = h_t.size()[:2], h_t.size()[2:]
         h_t = h_t.view(T*B, *features_shape)
@@ -241,7 +213,7 @@ class ConvDecoder(Normal):
         return {'loc': observation, 'scale': 1.0}
 
 
-def ObservationModel(symbolic, observation_size, belief_size, state_size, embedding_size, activation_function='relu'):
+def ObservationModel(symbolic, observation_size, belief_size, state_size, embedding_size, activation_function='relu') -> nn.Module:
     if symbolic:
         return DenseDecoder(observation_size, belief_size, state_size, embedding_size, activation_function)
     else:
@@ -249,7 +221,7 @@ def ObservationModel(symbolic, observation_size, belief_size, state_size, embedd
 
 
 class RewardModel(Normal):
-    def __init__(self, h_size, s_size, hidden_size, activation='relu'):
+    def __init__(self, h_size: int, s_size: int, hidden_size: int, activation='relu'):
         # p(o_t | h_t, s_t)
         # [--belief-size: 200, --hidden-size: 200, --state-size: 30]
         super().__init__(cond_var=['h_t', 's_t'], var=['r_t'])
@@ -259,7 +231,7 @@ class RewardModel(Normal):
         self.fc3 = nn.Linear(hidden_size, 1)
         self.modules = [self.fc1, self.fc2, self.fc3]
 
-    def forward(self, h_t, s_t):
+    def forward(self, h_t: torch.Tensor, s_t: torch.Tensor) -> Dict:
         # reshape input tensors
         (T, B), features_shape = h_t.size()[:2], h_t.size()[2:]
         h_t = h_t.view(T*B, *features_shape)
@@ -278,7 +250,7 @@ class RewardModel(Normal):
 
 
 class ValueModel(Normal):
-    def __init__(self, belief_size, state_size, hidden_size, activation_function='relu'):
+    def __init__(self, belief_size: int, state_size: int, hidden_size: int, activation_function: str =      'relu'):
         super().__init__(cond_var=['h_t', 's_t'], var=['r_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, hidden_size)
@@ -287,7 +259,7 @@ class ValueModel(Normal):
         self.fc4 = nn.Linear(hidden_size, 1)
         self.modules = [self.fc1, self.fc2, self.fc3, self.fc4]
 
-    def forward(self, h_t, s_t):
+    def forward(self, h_t: torch.Tensor, s_t: torch.Tensor) -> Dict:
         # reshape input tensors
         (T, B), features_shape = h_t.size()[:2], h_t.size()[2:]
         h_t = h_t.view(T*B, *features_shape)
@@ -307,8 +279,8 @@ class ValueModel(Normal):
 
 
 class Pie(Normal):
-    def __init__(self, belief_size, state_size, hidden_size, action_size, dist='tanh_normal',
-                 activation_function='elu', min_std=1e-4, init_std=5, mean_scale=5):
+    def __init__(self, belief_size: int, state_size: int, hidden_size: int, action_size: int, dist: str =      'tanh_normal',
+                 activation_function: str =      'elu', min_std: float =      1e-4, init_std: float      =      5, mean_scale: float =      5):
         super().__init__(cond_var=['h_t', 's_t'], var=['a_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, hidden_size)
@@ -323,7 +295,7 @@ class Pie(Normal):
         self._init_std = init_std
         self._mean_scale = mean_scale
 
-    def forward(self, h_t, s_t):
+    def forward(self, h_t: torch.Tensor, s_t: torch.Tensor) -> Dict:
         raw_init_std = torch.log(torch.exp(torch.tensor(
             self._init_std, dtype=torch.float32)) - 1)
         x = torch.cat([h_t, s_t], dim=1)
@@ -339,32 +311,17 @@ class Pie(Normal):
         action_std = F.softplus(action_std_dev + raw_init_std) + self._min_std
         return {'loc': action_mean, 'scale': action_std}
 
-    """
-    def get_action(self, belief, state, det=False):
-        action_mean, action_std = self.forward(belief, state)
-        dist = Normal(action_mean, action_std)
-        dist = TransformedDistribution(dist, TanhBijector())
-        dist = torch.distributions.Independent(dist, 1)
-        dist = SampleDist(dist)
-        if det:
-            return dist.mode()
-        else:
-            return dist.rsample()
-    """
-
 
 class ActorModel(nn.Module):
-    def __init__(self, belief_size, state_size, hidden_size, action_size, dist='tanh_normal',
-                 activation_function='elu', min_std=1e-4, init_std=5, mean_scale=5):
+    def __init__(self, belief_size: int, state_size: int, hidden_size: int, action_size: int, dist: str =      'tanh_normal',
+                 activation_function: str =      'elu', min_std: float =      1e-4, init_std: float =      5, mean_scale: float =      5):
         super().__init__()
         self.pie = Pie(belief_size, state_size, hidden_size, action_size, dist=dist,
                        activation_function=activation_function, min_std=min_std, init_std=init_std, mean_scale=mean_scale)
 
-    def get_action(self, belief, state, det=False):
-        # TODO: check lines below
+    def get_action(self, belief: torch.Tensor, state: torch.Tensor, det: bool =      False) -> torch.Tensor:
         if det:
             # get mode
-            # TODO: check this
             actions = self.pie.sample({'h_t': belief, 's_t': state}, sample_shape=[
                                       100], reparam=True)['a_t']  # (100, 2450, 6)
             batch_size = actions.size(1)
@@ -382,7 +339,7 @@ class ActorModel(nn.Module):
 
 
 class SymbolicEncoder(jit.ScriptModule):
-    def __init__(self, observation_size, embedding_size, activation_function='relu'):
+    def __init__(self, observation_size: int, embedding_size: int, activation_function: str =      'relu'):
         super().__init__()
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(observation_size, embedding_size)
@@ -401,7 +358,7 @@ class SymbolicEncoder(jit.ScriptModule):
 class VisualEncoder(jit.ScriptModule):
     __constants__ = ['embedding_size']
 
-    def __init__(self, embedding_size, activation_function='relu'):
+    def __init__(self, embedding_size: int, activation_function: str = 'relu'):
         super().__init__()
         self.act_fn = getattr(F, activation_function)
         self.embedding_size = embedding_size
@@ -414,7 +371,7 @@ class VisualEncoder(jit.ScriptModule):
                         self.conv3, self.conv4, self.fc]
 
     @jit.script_method
-    def forward(self, observation):
+    def forward(self, observation: torch.Tensor):
         hidden = self.act_fn(self.conv1(observation))
         hidden = self.act_fn(self.conv2(hidden))
         hidden = self.act_fn(self.conv3(hidden))
@@ -425,77 +382,8 @@ class VisualEncoder(jit.ScriptModule):
         return hidden
 
 
-def Encoder(symbolic, observation_size, embedding_size, activation_function='relu'):
+def Encoder(symbolic: bool, observation_size: int, embedding_size: int, activation_function: str ='relu') -> Union[SymbolicEncoder, VisualEncoder]:
     if symbolic:
         return SymbolicEncoder(observation_size, embedding_size, activation_function)
     else:
         return VisualEncoder(embedding_size, activation_function)
-
-
-# "atanh", "TanhBijector" and "SampleDist" are from the following repo
-# https://github.com/juliusfrost/dreamer-pytorch
-def atanh(x):
-    return 0.5 * torch.log((1 + x) / (1 - x))
-
-
-class TanhBijector(torch.distributions.Transform):
-    def __init__(self):
-        super().__init__()
-        self.bijective = True
-
-    @property
-    def sign(self): return 1.
-
-    def _call(self, x): return torch.tanh(x)
-
-    def _inverse(self, y: torch.Tensor):
-        """クランプして逆関数かけてる"""
-        y = torch.where(
-            (torch.abs(y) <= 1.),
-            torch.clamp(y, -0.99999997, 0.99999997),
-            y)
-        y = atanh(y)
-        return y
-
-    """
-    # this func is not used
-    def log_abs_det_jacobian(self, x, y):
-        return 2. * (np.log(2) - x - F.softplus(-2. * x))
-    """
-
-
-class SampleDist:
-    def __init__(self, dist, samples=100):
-        self._dist = dist
-        self._samples = samples
-
-    @property
-    def name(self):
-        return 'SampleDist'
-
-    def __getattr__(self, name):
-        return getattr(self._dist, name)
-
-    def mean(self):
-        sample = dist.rsample()
-        return torch.mean(sample, 0)
-
-    def mode(self):
-        dist = self._dist.expand(
-            (self._samples, *self._dist.batch_shape))  # サンプル数, B
-        sample = dist.rsample()
-        logprob = dist.log_prob(sample)
-        batch_size = sample.size(1)
-        feature_size = sample.size(2)
-        indices = torch.argmax(logprob, dim=0).reshape(
-            1, batch_size, 1).expand(1, batch_size, feature_size)
-        return torch.gather(sample, 0, indices).squeeze(0)
-
-    def entropy(self):
-        dist = self._dist.expand((self._samples, *self._dist.batch_shape))
-        sample = dist.rsample()
-        logprob = dist.log_prob(sample)
-        return -torch.mean(logprob, 0)
-
-    def sample(self):
-        return self._dist.sample()
