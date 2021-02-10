@@ -94,6 +94,8 @@ class Gaussian(Normal):
         self.fcs = nn.Sequential(
             nn.Linear(in_dim, 256),
             nn.LeakyReLU(),
+            nn.Linear(256, 256),
+            nn.LeakyReLU(),
             nn.Linear(256, list(var_dict.values())[0]*2)
         ).apply(initialize_weight)
         self.inputs = cond_var_dict.keys()
@@ -159,8 +161,9 @@ class Pie(Normal):
         self.fcs = nn.Sequential(
             nn.Linear(in_dim, 256),
             nn.ReLU(),
-            nn.Linear(256, 2*action_dim),
-            nn.ReLU()
+            nn.Linear(256, 256),
+            nn.ReLU(),
+            nn.Linear(256, 2*action_dim)
         ).apply(initialize_weight)
 
     def forward(self, obs_and_action):
