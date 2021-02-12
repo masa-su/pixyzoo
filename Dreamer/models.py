@@ -324,6 +324,7 @@ class ActorModel(nn.Module):
             # get mode
             actions = self.pie.sample({'h_t': belief, 's_t': state}, sample_shape=[
                                       100], reparam=True)['a_t']  # (100, 2450, 6)
+            actions = torch.tanh(actions)
             batch_size = actions.size(1)
             feature_size = actions.size(2)
             logprob = self.pie.get_log_prob(
