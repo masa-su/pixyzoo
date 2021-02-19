@@ -288,15 +288,15 @@ class LatentModel(nn.Module):
             z1_pos_list.append(z1_pos)
             z2_pos_list.append(z2_pos)
 
+            # calc KL Divergence
+            loss += self.loss_kld.eval(
+                {"z_t^2": z2_pri, "a_t": action[:, t - 1], "x_encoded": x_encoded[:, t]})
+
             # sampling from prior dist
             z1_pri = self.z1_prior.sample(
                 {"z_t^2": z2_pri, "a_t": action[:, t - 1]}, reparam=True)["z_{t + 1}^1"]
             z2_pri = self.z2_prior.sample(
                 {"z_{t + 1}^1": z1_pri, "z_t^2": z2_pri, "a_t": action[:, t - 1]}, reparam=True)["z_{t + 1}^2"]
-
-            # calc KL Divergence
-            loss += self.loss_kld.eval(
-                {"z_t^2": z2_pri, "a_t": action[:, t - 1], "x_encoded": x_encoded[:, t]})
 
         loss = loss.mean(dim=0)
         return torch.stack(z1_pos_list, dim=1), torch.stack(z2_pos_list, dim=1), loss
