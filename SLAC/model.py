@@ -93,9 +93,9 @@ class Gaussian(Normal):
         in_dim = sum(cond_var_dict.values())
         self.fcs = nn.Sequential(
             nn.Linear(in_dim, 256),
-            nn.LeakyReLU(),
+            nn.LeakyReLU(0.2),
             nn.Linear(256, 256),
-            nn.LeakyReLU(),
+            nn.LeakyReLU(0.2),
             nn.Linear(256, list(var_dict.values())[0]*2)
         ).apply(initialize_weight)
         self.inputs = cond_var_dict.keys()
@@ -182,12 +182,11 @@ class Actor(nn.Module):
     def sample(self, x_encoded):
         pi = self.pi.sample({'obs_and_action': x_encoded}, reparam=True)["pi"]
         action = torch.tanh(pi)
-        # log_prob = self.pi.dist.log_prob(action) + np.log(1 - action**2)
         log_prob = self.pi.get_log_prob(
-            {'obs_and_action': x_encoded, 'pi': pi}).reshape([-1, 1])
+            {'obs_and_action': x_encoded, 'pi': pi}, sum_features=False)
 
-        log_prob -= torch.log(1 - action.pow(2) +
-                              1e-6).sum(dim=-1, keepdim=True)
+        log_prob -= torch.log(1 - action.pow(2) + 1e-6)
+        log_prob = log_prob.sum(dim=-1, keepdim=True)
         return action, log_prob
 
     def act_greedy(self, x_encoded):
@@ -298,7 +297,8 @@ class LatentModel(nn.Module):
             # calc KL Divergence
             loss += self.loss_kld.eval(
                 {"z_t^2": z2_pri, "a_t": action[:, t - 1], "x_encoded": x_encoded[:, t]})
-        loss = (loss / (action.size(1) + 1)).mean(dim=0)
+
+        loss = loss.mean(dim=0)
         return torch.stack(z1_pos_list, dim=1), torch.stack(z2_pos_list, dim=1), loss
 
 
