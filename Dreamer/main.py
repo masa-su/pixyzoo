@@ -13,7 +13,7 @@ from env import CONTROL_SUITE_ENVS, Env, GYM_ENVS, EnvBatcher
 from memory import ExperienceReplay
 from models import bottle_tuple, Encoder, ObservationModel, RewardModel, TransitionModel, ValueModel, ActorModel
 from planner import MPCPlanner
-from utils import lineplot, write_video, imagine_ahead, lambda_return, FreezeParameters, ActivateParameters
+from utils import lineplot, imagine_ahead, lambda_return, FreezeParameters
 from tensorboardX import SummaryWriter
 
 
@@ -214,7 +214,6 @@ free_nats = torch.full((1, ), args.free_nats, device=args.device)
 
 def update_belief_and_act(args, env, planner, transition_model, encoder, belief, posterior_state, action, observation, explore=False):
     # Infer belief over current state q(s_t|o≤t,a<t) from the history
-    # print("action size: ",action.size()) torch.Size([1, 6])
     belief, _, _, _, posterior_state, _, _ = transition_model(posterior_state, action.unsqueeze(
         dim=0), belief, encoder(observation).unsqueeze(dim=0))  # Action and observation need extra time dimension
     belief, posterior_state = belief.squeeze(dim=0), posterior_state.squeeze(
@@ -301,7 +300,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 h_t=beliefs, s_t=posterior_states)['loc']
             reward_loss = F.mse_loss(reward_mean, rewards[:-1], reduction='none').mean(dim=(0, 1))
 
-        # transition loss(posteriorとpriorの間でKL_divergence計算する)　TODO: rewrite this
+        # transition loss
         div = kl_divergence(Normal(posterior_means, posterior_std_devs), Normal(
             prior_means, prior_std_devs)).sum(dim=2)
         # Note that normalisation by overshooting distance and weighting by overshooting distance cancel out
@@ -415,7 +414,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
             1, args.state_size, device=args.device), torch.zeros(1, env.action_size, device=args.device)
         pbar = tqdm(range(args.max_episode_length // args.action_repeat))
         for t in pbar:
-            # print("step",t)
             belief, posterior_state, action, next_observation, reward, done = update_belief_and_act(
                 args, env, planner, transition_model, encoder, belief, posterior_state, action, observation.to(device=args.device), explore=True)
             D.append(observation, action.cpu(), reward, done)
@@ -477,12 +475,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                  metrics['test_rewards'], 'test_rewards_steps', results_dir, xaxis='step')
         if not args.symbolic_env:
             episode_str = str(episode).zfill(len(str(args.episodes)))
-            """
-            write_video(video_frames, 'test_episode_%s' %
-                        episode_str, results_dir)  # Lossy compression
-            save_image(torch.as_tensor(
-                video_frames[-1]), os.path.join(results_dir, 'test_episode_%s.png' % episode_str))
-            """
         torch.save(metrics, os.path.join(results_dir, 'metrics.pth'))
 
         # Set models to train mode

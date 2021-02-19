@@ -21,8 +21,6 @@ def bottle_tuple(f, x_tuple, var_name: str = '', kwargs={}):
                                    *x[1][2:]), zip(x_tuple, x_sizes)), **kwargs)
     if var_name != '':
         y = y[var_name]
-    # (T * B, features...)にしてからネットワークに食わせる(x.view(x_size[0] * x_size[1], * x_size[2:]))
-    # x_tupleの中身はconcatしていない
     y_size = y.size()
     output = y.view(x_sizes[0][0], x_sizes[0][1], *y_size[1:])
     return output
@@ -223,7 +221,6 @@ def ObservationModel(symbolic, observation_size, belief_size, state_size, embedd
 class RewardModel(Normal):
     def __init__(self, h_size: int, s_size: int, hidden_size: int, activation='relu'):
         # p(o_t | h_t, s_t)
-        # [--belief-size: 200, --hidden-size: 200, --state-size: 30]
         super().__init__(cond_var=['h_t', 's_t'], var=['r_t'])
         self.act_fn = getattr(F, activation)
         self.fc1 = nn.Linear(s_size + h_size, hidden_size)
