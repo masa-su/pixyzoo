@@ -207,7 +207,7 @@ class LatentModel(nn.Module):
 
         # p(z1(t + 1) | z2(t), a(t))
         self.z1_prior = Gaussian(cond_var_dict={
-            "z_t^2": z2_dim, "a_t": num_action}, var_dict={"z_{t + 1}^1": z1_dim})
+            "zpri_t^2": z2_dim, "a_t": num_action}, var_dict={"z_{t + 1}^1": z1_dim})
 
         # p(z2(t+1) | z1(t+1), z2(t), a(t))
         self.z2_prior = Gaussian(cond_var_dict={
@@ -223,7 +223,7 @@ class LatentModel(nn.Module):
 
         # q(z1(t+1) | x_encoded(t+1), z2(t), a(t))
         self.z1_posterior = Gaussian(
-            cond_var_dict={"x_encoded": encoded_obs_dim, "a_t": num_action, "z_t^2": z2_dim}, var_dict={"z_{t + 1}^1": z1_dim})
+            cond_var_dict={"x_encoded": encoded_obs_dim, "a_t": num_action, "zpos_t^2": z2_dim}, var_dict={"z_{t + 1}^1": z1_dim})
 
         self.z2_posterior_init = self.z2_prior_init
         self.z2_posterior = self.z2_prior
@@ -233,7 +233,6 @@ class LatentModel(nn.Module):
             self.z1_posterior_init, self.z1_prior_init, analytical=True)
         self.loss_kld = KullbackLeibler(
             self.z1_posterior, self.z1_prior, analytical=True)
-
         self.apply(initialize_weight)
 
     def calculate_loss(self, state, action, reward, done):
@@ -269,12 +268,15 @@ class LatentModel(nn.Module):
         # calc KL Divergence
         loss = self.loss_kld_init.eval(
             {'x': action[:, 0], 'x_encoded': x_encoded[:, 0]})
-
         for t in range(1, action.size(1) + 1):
+            # calculate kl divergence
+            loss += self.loss_kld.eval(
+                {"zpri_t^2": z2_pri, "zpos_t^2": z2_pos, "a_t": action[:, t - 1], "x_encoded": x_encoded[:, t]})
+
             # q(z1(t) | x_encoded(t), z2(t-1), a(t-1))
             z1_pos = self.z1_posterior.sample(
                 {'x_encoded': x_encoded[:, t],
-                 'z_t^2': z2_pos,
+                 'zpos_t^2': z2_pos,
                  'a_t': action[:, t - 1]
                  },
                 reparam=True)["z_{t + 1}^1"]
@@ -288,13 +290,9 @@ class LatentModel(nn.Module):
             z1_pos_list.append(z1_pos)
             z2_pos_list.append(z2_pos)
 
-            # calc KL Divergence
-            loss += self.loss_kld.eval(
-                {"z_t^2": z2_pri, "a_t": action[:, t - 1], "x_encoded": x_encoded[:, t]})
-
             # sampling from prior dist
             z1_pri = self.z1_prior.sample(
-                {"z_t^2": z2_pri, "a_t": action[:, t - 1]}, reparam=True)["z_{t + 1}^1"]
+                {"zpri_t^2": z2_pri, "a_t": action[:, t - 1]}, reparam=True)["z_{t + 1}^1"]
             z2_pri = self.z2_prior.sample(
                 {"z_{t + 1}^1": z1_pri, "z_t^2": z2_pri, "a_t": action[:, t - 1]}, reparam=True)["z_{t + 1}^2"]
 
