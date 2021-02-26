@@ -11,13 +11,15 @@
 - TensorBoardX
 - tqdm
 - torchvision
+- gym
+- dm_control
 
-
+You can try dreamer on gym envs and deepmind control suite envs. Available envs are listed in the env.py file.
 ## How to Train
 ```
 python main.py --algo=dreamer --env=walker-walk --action-repeat=2 --experience-size 1000 --seed 0
 ```
-
+Note: In case you run out of memory during training, try smaller experience-size option.
 ## Included Files
 ### env.py
 Wrappers of gym/dmc envs
