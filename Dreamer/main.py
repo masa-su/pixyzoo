@@ -458,7 +458,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 total_rewards += reward.numpy()
 
                 if not args.symbolic_env:  # Collect real vs. predicted frames for video
-                    print(belief.size(), posterior_state.size())
                     # add sequence dimension
                     obs_predicted = observation_model(h_t=torch.unsqueeze(
                         belief, 0), s_t=torch.unsqueeze(posterior_state, 0))['loc'][0]
