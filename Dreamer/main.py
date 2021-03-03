@@ -13,7 +13,7 @@ from env import CONTROL_SUITE_ENVS, Env, GYM_ENVS, EnvBatcher
 from memory import ExperienceReplay
 from models import bottle_tuple, Encoder, ObservationModel, RewardModel, TransitionModel, ValueModel, ActorModel
 from planner import MPCPlanner
-from utils import lineplot, imagine_ahead, lambda_return, FreezeParameters
+from utils import lineplot, write_video, imagine_ahead, lambda_return, FreezeParameters
 from tensorboardX import SummaryWriter
 
 
@@ -433,8 +433,8 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                  metrics['train_rewards'], 'train_rewards', results_dir)
 
     # Test model
-    print("Test model")
     if episode % args.test_interval == 0:
+        print("Test model")
         # Set models to eval mode
         transition_model.eval()
         observation_model.eval()
@@ -456,11 +456,15 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 belief, posterior_state, action, next_observation, reward, done = update_belief_and_act(
                     args, test_envs, planner, transition_model, encoder, belief, posterior_state, action, observation.to(device=args.device))
                 total_rewards += reward.numpy()
-                """
+
                 if not args.symbolic_env:  # Collect real vs. predicted frames for video
-                    video_frames.append(make_grid(torch.cat([observation, observation_model(
-                        belief, posterior_state)['loc'].cpu()], dim=3) + 0.5, nrow=5).numpy())  # Decentre
-                """
+                    print(belief.size(), posterior_state.size())
+                    # add sequence dimension
+                    obs_predicted = observation_model(h_t=torch.unsqueeze(
+                        belief, 0), s_t=torch.unsqueeze(posterior_state, 0))['loc'][0]
+                    video_frames.append(make_grid(torch.cat(
+                        [observation, obs_predicted.cpu()], dim=3) + 0.5, nrow=5).numpy())  # Decentre
+
                 observation = next_observation
                 if done.sum().item() == args.test_episodes:
                     pbar.close()
@@ -475,6 +479,11 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                  metrics['test_rewards'], 'test_rewards_steps', results_dir, xaxis='step')
         if not args.symbolic_env:
             episode_str = str(episode).zfill(len(str(args.episodes)))
+            write_video(video_frames, 'test_episode_%s' %
+                        episode_str, results_dir)  # Lossy compression
+            save_image(torch.as_tensor(
+                video_frames[-1]), os.path.join(results_dir, 'test_episode_%s.png' % episode_str))
+
         torch.save(metrics, os.path.join(results_dir, 'metrics.pth'))
 
         # Set models to train mode
