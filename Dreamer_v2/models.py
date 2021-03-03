@@ -3,9 +3,7 @@ import torch
 from torch import jit, nn, var
 from torch.nn import functional as F
 import torch.distributions
-# from torch.distributions.normal import Normal
-from torch.distributions.transforms import Transform, TanhTransform
-from torch.distributions.transformed_distribution import TransformedDistribution
+from torch.nn import RNNCellBase
 import numpy as np
 
 from pixyz.distributions import Normal
@@ -29,14 +27,14 @@ def bottle_tuple(f, x_tuple, var_name: str = '', kwargs={}):
 class TransitionModel(nn.Module):
     __constants__ = ['min_std_dev']
 
-    def __init__(self, belief_size, state_size, action_size, hidden_size, embedding_size, activation_function='relu', min_std_dev=0.1):
+    def __init__(self, belief_size, state_size, action_size, hidden_size, embedding_size, activation_function='relu', min_std_dev=0.1, disable_gru_norm=False):
         super().__init__()
         self.act_fn = getattr(F, activation_function)
         self.min_std_dev = min_std_dev
         self.fc_embed_state_action = nn.Linear(
             state_size + action_size, belief_size)
-        self.rnn = nn.GRUCell(belief_size, belief_size)
-
+        self.rnn = NormGRUCell(
+            belief_size=belief_size, norm=not disable_gru_norm)
         # pixyz dists
         self.stochastic_state_model = StochasticStateModel(
             h_size=belief_size, s_size=state_size, hidden_size=hidden_size, activation=self.act_fn, min_std_dev=self.min_std_dev)
@@ -385,3 +383,30 @@ def Encoder(symbolic: bool, observation_size: int, embedding_size: int, activati
         return SymbolicEncoder(observation_size, embedding_size, activation_function)
     else:
         return VisualEncoder(embedding_size, activation_function)
+
+
+class NormGRUCell(nn.Module):
+    def __init__(self, belief_size, norm=False, act=torch.tanh, update_bias=-1, **kwargs):
+        super().__init__()
+        self._size = belief_size
+        self._act = act
+        self._norm = norm
+        self._update_bias = update_bias
+        self._layer = nn.Linear(
+            2 * belief_size, 3 * belief_size, bias=norm is not None, **kwargs)
+        if norm:
+          self._norm = nn.LayerNorm(normalized_shape=3*belief_size, eps=1e-3)
+
+    def forward(self, inputs, state):
+        # state = state[0]  # Keras wraps the state in a list.
+        parts = self._layer(torch.cat([inputs, state], -1))
+        if self._norm:
+           parts = self._norm(parts)
+        reset, cand, update = torch.chunk(parts, 3, -1)
+        # print(reset.size(), cand.size(), update.size()) # (50, 400)
+        reset = torch.sigmoid(reset)
+        cand = self._act(reset * cand)
+        # print(cand.size()) (50, 400)
+        update = torch.sigmoid(update + self._update_bias)
+        output = update * cand + (1 - update) * state
+        return output

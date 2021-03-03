@@ -100,6 +100,8 @@ parser.add_argument('--candidates', type=int, default=1000,
                     metavar='J', help='Candidate samples per iteration')
 parser.add_argument('--top-candidates', type=int, default=100,
                     metavar='K', help='Number of top candidates to fit')
+parser.add_argument('--disable_gru_norm', action='store_true',
+                    help='Disable normalization of gru cells')
 parser.add_argument('--test', action='store_true', help='Test only')
 parser.add_argument('--test-interval', type=int, default=25,
                     metavar='I', help='Test interval (episodes)')
@@ -166,7 +168,7 @@ elif not args.test:
 
 # Initialise model parameters randomly
 transition_model = TransitionModel(args.belief_size, args.state_size, env.action_size,
-                                   args.hidden_size, args.embedding_size, args.dense_activation_function).to(device=args.device)
+                                   args.hidden_size, args.embedding_size, args.dense_activation_function, disable_gru_norm=args.disable_gru_norm).to(device=args.device)
 observation_model = ObservationModel(args.symbolic_env, env.observation_size, args.belief_size,
                                      args.state_size, args.embedding_size, args.cnn_activation_function).to(device=args.device)
 reward_model = RewardModel(h_size=args.belief_size, s_size=args.state_size, hidden_size=args.hidden_size,
