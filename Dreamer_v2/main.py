@@ -116,6 +116,11 @@ parser.add_argument('--models', type=str, default='',
 parser.add_argument('--experience-replay', type=str, default='',
                     metavar='ER', help='Load experience replay')
 parser.add_argument('--render', action='store_true', help='Render environment')
+parser.add_argument('--kl_free', type=str, default='0.0',
+                    help='')  # TODO: write descent help here
+parser.add_argument('--kl_balance', type=str, default='0.0', help='')
+parser.add_argument('--kl_scale', type=str, default='0.0', help='')
+
 args = parser.parse_args()
 # Overshooting distance cannot be greater than chunk size
 args.overshooting_distance = min(args.chunk_size, args.overshooting_distance)
@@ -168,7 +173,9 @@ elif not args.test:
 
 # Initialise model parameters randomly
 transition_model = TransitionModel(args.belief_size, args.state_size, env.action_size,
-                                   args.hidden_size, args.embedding_size, args.dense_activation_function, disable_gru_norm=args.disable_gru_norm).to(device=args.device)
+                                   args.hidden_size, args.embedding_size, args.dense_activation_function, disable_gru_norm=args.disable_gru_norm,
+                                   kl_free=args.kl_free, kl_scale=args.kl_scale, kl_balance=args.kl_balance
+                                   ).to(device=args.device)
 observation_model = ObservationModel(args.symbolic_env, env.observation_size, args.belief_size,
                                      args.state_size, args.embedding_size, args.cnn_activation_function).to(device=args.device)
 reward_model = RewardModel(h_size=args.belief_size, s_size=args.state_size, hidden_size=args.hidden_size,
@@ -303,13 +310,22 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
             reward_loss = F.mse_loss(reward_mean, rewards[:-1], reduction='none').mean(dim=(0, 1))
 
         # transition loss
+        div = transition_model.calc_kld(current_step=s,
+                                        posterior_means=posterior_means,
+                                        posterior_std_devs=posterior_std_devs,
+                                        prior_means=prior_means,
+                                        prior_std_devs=prior_std_devs)
+        """
         div = kl_divergence(Normal(posterior_means, posterior_std_devs), Normal(
             prior_means, prior_std_devs)).sum(dim=2)
         # Note that normalisation by overshooting distance and weighting by overshooting distance cancel out
         kl_loss = torch.max(div, free_nats).mean(dim=(0, 1))
+        """
+        #TODO: これどうするか考える
         if args.global_kl_beta != 0:
             kl_loss += args.global_kl_beta * kl_divergence(Normal(
                 posterior_means, posterior_std_devs), global_prior).sum(dim=2).mean(dim=(0, 1))
+
         # Calculate latent overshooting objective for t > 0
         if args.overshooting_kl_beta != 0:
             overshooting_vars = []  # Collect variables for overshooting to process in batch

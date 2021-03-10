@@ -1,14 +1,16 @@
-from typing import Dict, Optional, List
+from typing import Dict, Optional, List, Union
+from pixyz.distributions.exponential_distributions import Categorical
 import torch
 from torch import jit, nn, var
+from torch.distributions.one_hot_categorical import OneHotCategorical
 from torch.nn import functional as F
 import torch.distributions
+from torch.distributions.kl import kl_divergence
 from torch.nn import RNNCellBase
 import numpy as np
-
 from pixyz.distributions import Normal
-from typing import Dict, Union
 
+from .schedulers import init_scheduler
 # Wraps the input tuple for a function to process a (time, batch, features sequence in batch, features) (assumes one output)
 
 
@@ -24,10 +26,28 @@ def bottle_tuple(f, x_tuple, var_name: str = '', kwargs={}):
     return output
 
 
+class ModifiedCategorical(torch.distributions.OneHotCategorical):
+    def __init__(self, probs=None, logits=None):
+        """OneHotCategorical dist with raparameterization method
+            called Straight-Through Grads with Auto-Diff"""
+        self.dist = super().__init__(logits=logits, probs=probs)
+
+    def mode(self) -> torch.Tensor:
+        """return values which is most likely to be selected"""
+        num_classes = self.dist.probs.size()[-1]
+        return torch.nn.functional.one_hot(torch.argmax(self.dist.probs, dim=-1), num_classes=num_classes)
+
+    def sample(self, sample_shape=()) -> torch.Tensor:
+        sample = self.dist.sample(sample_shape=sample_shape)
+        while len(probs.size()) < len(sample.size()):
+            probs = probs[None]  # add dimension to the top
+        sample += probs - probs.detach()  # Straight-Through Gradients with Auto-Diff
+        return sample
+
 class TransitionModel(nn.Module):
     __constants__ = ['min_std_dev']
 
-    def __init__(self, belief_size, state_size, action_size, hidden_size, embedding_size, activation_function='relu', min_std_dev=0.1, disable_gru_norm=False):
+    def __init__(self, belief_size, state_size, action_size, hidden_size, embedding_size, kl_free: str, kl_scale: str, kl_balance: str, activation_function='relu', min_std_dev=0.1, disable_gru_norm=False):
         super().__init__()
         self.act_fn = getattr(F, activation_function)
         self.min_std_dev = min_std_dev
@@ -41,6 +61,11 @@ class TransitionModel(nn.Module):
 
         self.obs_encoder = ObsEncoder(
             h_size=belief_size, s_size=state_size, activation=self.act_fn, embedding_size=embedding_size, hidden_size=hidden_size, min_std_dev=self.min_std_dev)
+
+        # initialize schedulers of constants related with kld calculation
+        self.kl_balance_sched = init_scheduler(config=kl_balance)
+        self.kl_free_sched = init_scheduler(config=kl_free)
+        self.kl_scale_sched = init_scheduler(config=kl_scale)
 
         self.modules = [self.fc_embed_state_action,
                         self.stochastic_state_model, self.obs_encoder, self.rnn]
@@ -108,6 +133,26 @@ class TransitionModel(nn.Module):
             hidden += [torch.stack(posterior_states[1:], dim=0), torch.stack(
                 posterior_means[1:], dim=0), torch.stack(posterior_std_devs[1:], dim=0)]
         return hidden
+
+    def calc_kld(self, current_step: int, posterior: torch.Tensor, prior: torch.Tensor) -> Tuple[float, torch.Tensor]:
+        """calculate KL Divergence for the given priors and posteriors"""
+        # get constants using schedulers
+        kl_free = self.kl_free_sched(current_step)
+        kl_balance = self.kl_balance_sched(current_step)
+        kl_scale = self.kl_scale_sched(current_step)
+        dist = torch.distributions.Independent(ModifiedCategorical, 1)
+        if kl_balance == 0.5:
+            value = kl_divergence(dist(posterior), dist(prior))
+            loss = value.mean()  # this value should be (1, )
+        else:
+            value_lhs = kl_divergence(dist(posterior), dist(prior.detach()))
+            loss_lhs = torch.maximum(value_lhs.mean(), kl_free)
+            value_rhs = kl_divergence(dist(posterior.detach()), dist(prior))
+            loss_lhs = torch.maximum(value_rhs.mean(), kl_free)
+            loss = (1 - kl_balance) * loss_lhs + kl_balance * kl_balance
+
+        loss *= kl_scale
+        return loss, value
 
 
 class DenseDecoder(Normal):
