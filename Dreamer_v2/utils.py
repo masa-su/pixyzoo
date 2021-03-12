@@ -47,30 +47,29 @@ def imagine_ahead(prev_state, prev_belief, policy: ActorModel, transition_model:
   '''
   imagine_ahead is the function to draw the imaginary tracjectory using the dynamics model, actor, critic.
   Input: current state (posterior), current belief (hidden), policy, transition_model  # torch.Size([50, 30]) torch.Size([50, 200])
-  Output: generated trajectory of features includes beliefs, prior_states, prior_means, prior_std_devs
-          torch.Size([49, 50, 200]) torch.Size([49, 50, 30]) torch.Size([49, 50, 30]) torch.Size([49, 50, 30])
+  Output: generated trajectory of features includes beliefs, prior_states, prior_means, prior_std_devs, actions
+          torch.Size([49, 50, 200]) torch.Size([49, 50, 30]) torch.Size([49, 50, 30]) torch.Size([49, 50, 30]), torch.size()
   '''
+  #TODO: add description of the action size above
   flatten = lambda x: x.view([-1]+list(x.size()[2:]))
   prev_belief = flatten(prev_belief)
   prev_state = flatten(prev_state)
 
   # Create lists for hidden states (cannot use single tensor as buffer because autograd won't work with inplace writes)
   T = planning_horizon
-  beliefs, prior_states, prior_means, prior_std_devs = [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T
+  beliefs, prior_states, prior_means, prior_std_devs, actions = [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T
   beliefs[0], prior_states[0] = prev_belief, prev_state
 
   # Loop over time sequence
   for t in range(T - 1):
     _state = prior_states[t]
-    actions = policy.get_action(beliefs[t].detach(), _state.detach())
+    action = policy.get_action(beliefs[t].detach(), _state.detach())
+    actions[t + 1] = action
+
     # Compute belief (deterministic hidden state)
-    hidden = transition_model.act_fn(transition_model.fc_embed_state_action(torch.cat([_state, actions], dim=1)))
+    hidden = transition_model.act_fn(transition_model.fc_embed_state_action(torch.cat([_state, action], dim=1)))
     beliefs[t + 1] = transition_model.rnn(hidden, beliefs[t])
     # Compute state prior by applying transition dynamics
-    """
-    hidden = transition_model.act_fn(transition_model.fc_embed_belief_prior(beliefs[t + 1]))
-    prior_means[t + 1], _prior_std_dev = torch.chunk(transition_model.fc_state_prior(hidden), 2, dim=1)
-    """
     prior_states[t + 1] = transition_model.stochastic_state_model.sample(
         {'h_t': beliefs[t + 1]}, reparam=True)['s_t']
     loc_and_scale = transition_model.stochastic_state_model(h_t=beliefs[t + 1])
@@ -78,8 +77,8 @@ def imagine_ahead(prev_state, prev_belief, policy: ActorModel, transition_model:
     prior_means[t + 1] = loc_and_scale['loc']
 
   # Return new hidden states
-  # imagined_traj = [beliefs, prior_states, prior_means, prior_std_devs]
-  imagined_traj = [torch.stack(beliefs[1:], dim=0), torch.stack(prior_states[1:], dim=0), torch.stack(prior_means[1:], dim=0), torch.stack(prior_std_devs[1:], dim=0)]
+  # imagined_traj = [beliefs, prior_states, prior_means, prior_std_devs, actions]
+  imagined_traj = [torch.stack(beliefs[1:], dim=0), torch.stack(prior_states[1:], dim=0), torch.stack(prior_means[1:], dim=0), torch.stack(prior_std_devs[1:], dim=0),  torch.stack(actions[1:], dim=0)]
   return imagined_traj
 
 def lambda_return(imged_reward, value_pred, bootstrap, discount=0.99, lambda_=0.95):

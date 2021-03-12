@@ -1,4 +1,5 @@
-from typing import Dict, Optional, List, Union
+from typing import Any, Dict, Optional, List, Union, Tuple
+from pixyz import distributions
 from pixyz.distributions.exponential_distributions import Categorical
 import torch
 from torch import jit, nn, var
@@ -47,12 +48,13 @@ class ModifiedCategorical(torch.distributions.OneHotCategorical):
 class TransitionModel(nn.Module):
     __constants__ = ['min_std_dev']
 
-    def __init__(self, belief_size, state_size, action_size, hidden_size, embedding_size, kl_free: str, kl_scale: str, kl_balance: str, activation_function='relu', min_std_dev=0.1, disable_gru_norm=False):
+    def __init__(self, belief_size: int, state_size: int, num_action: int, hidden_size: int, embedding_size: int, kl_free: str, kl_scale: str, kl_balance: str, activation_function: str = 'relu', min_std_dev: float = 0.1, disable_gru_norm: bool = False):
         super().__init__()
+        #TODO: 離散行動空間への対応(action_sizeはもう使えない)
         self.act_fn = getattr(F, activation_function)
         self.min_std_dev = min_std_dev
         self.fc_embed_state_action = nn.Linear(
-            state_size + action_size, belief_size)
+            state_size + num_action, belief_size)
         self.rnn = NormGRUCell(
             belief_size=belief_size, norm=not disable_gru_norm)
         # pixyz dists
@@ -378,6 +380,32 @@ class ActorModel(nn.Module):
         else:
             return torch.tanh(self.pie.sample({'h_t': belief, 's_t': state}, reparam=True)['a_t'])
 
+    def get_log_prob(self, action: torch.Tensor, h_t: torch.Tensor, s_t: torch.Tensor) -> torch.Tensor:
+        """Calculate log probability of the given action"""
+        #TODO: check this impl
+        gaussian_logprob = self.pie.get_log_prob(
+            {'a_t': torch.atanh(action), "h_t": h_t, "s_t": s_t}, sum_features=False)
+        logprob = gaussian_logprob - torch.log(1 - action.pow(2) + 1e-6)
+        logprob = logprob.sum(dim=-1)
+        return logprob
+
+
+class CategoricalActorModel(distributions.Categorical):
+    def __init__(self, num_actions: int, h_size: int, s_size: int, num_layers: int, num_units: int, activation: Any = nn.ELU, ):
+        super().__init__(cond_var=['h_t', 's_t'], var=['a_t'])
+        assert num_layers >= 2, f'This model requires at least 2 layers, but {num_layers} are given'
+        layers = [nn.Linear(in_features=h_size + s_size,
+                            out_features=num_units), activation]
+        for _ in range(num_layers - 2):
+            layers.append(
+                nn.Linear(in_features=num_units, out_features=num_units))
+            layers.append(activation)
+        self.fc = nn.Sequential(layers)
+
+    def forward(self, h_t: torch.Tensor, s_t: torch.Tensor) -> Dict:
+        inputs = torch.cat([h_t, s_t], axis=-1)
+        out = self.fc(inputs)
+        return {'probs': out}
 
 class SymbolicEncoder(jit.ScriptModule):
     def __init__(self, observation_size: int, embedding_size: int, activation_function: str =      'relu'):

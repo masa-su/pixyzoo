@@ -11,10 +11,12 @@ from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
 from env import CONTROL_SUITE_ENVS, Env, GYM_ENVS, EnvBatcher
 from memory import ExperienceReplay
-from models import bottle_tuple, Encoder, ObservationModel, RewardModel, TransitionModel, ValueModel, ActorModel
+from models import CategoricalActorModel, bottle_tuple, Encoder, ObservationModel, RewardModel, TransitionModel, ValueModel, ActorModel
 from planner import MPCPlanner
 from utils import lineplot, imagine_ahead, lambda_return, FreezeParameters
 from tensorboardX import SummaryWriter
+
+from schedulers import init_scheduler
 
 
 # Hyperparameters
@@ -116,10 +118,21 @@ parser.add_argument('--models', type=str, default='',
 parser.add_argument('--experience-replay', type=str, default='',
                     metavar='ER', help='Load experience replay')
 parser.add_argument('--render', action='store_true', help='Render environment')
-parser.add_argument('--kl_free', type=str, default='0.0',
+parser.add_argument('--kl-free', type=str, default='0.0',
                     help='')  # TODO: write descent help here
-parser.add_argument('--kl_balance', type=str, default='0.0', help='')
-parser.add_argument('--kl_scale', type=str, default='0.0', help='')
+parser.add_argument('--kl-balance', type=str, default='0.0', help='')
+parser.add_argument('--kl-scale', type=str, default='0.0', help='')
+parser.add_argument('--imag-gradient-mix', type=str, default='linear(0.1,0,2.5e6)',
+                    help="ratio between reinforce grad and dynamics backprop grad")
+parser.add_argument('--actor-entropy', type=str, default='linear(3e-3,3e-4,2.5e6)',
+                    help='')
+parser.add_argument('--actor-state-entropy', type=str, default='0',
+                    help='')
+parser.add_argument('--num-actor-layers', type=int, default=4,
+                    help="number of the fc layers of e actor")
+parser.add_argument('--num-actor-units', type=int, default=400,
+                    help='number of hidden units in the each layer of the actor')
+# TODO: add above discription
 
 args = parser.parse_args()
 # Overshooting distance cannot be greater than chunk size
@@ -155,6 +168,7 @@ if args.experience_replay != '' and os.path.exists(args.experience_replay):
     metrics['steps'], metrics['episodes'] = [D.steps] * \
         D.episodes, list(range(1, D.episodes + 1))
 elif not args.test:
+    #TODO: fix replay buffer(env.action_sizeはDiscrete action spaceでは使えない)
     D = ExperienceReplay(args.experience_size, args.symbolic_env,
                          env.observation_size, env.action_size, args.bit_depth, args.device)
     # Initialise dataset D with S random seed episodes
@@ -172,6 +186,7 @@ elif not args.test:
 
 
 # Initialise model parameters randomly
+#FIXME: env.action_sizeは使えない
 transition_model = TransitionModel(args.belief_size, args.state_size, env.action_size,
                                    args.hidden_size, args.embedding_size, args.dense_activation_function, disable_gru_norm=args.disable_gru_norm,
                                    kl_free=args.kl_free, kl_scale=args.kl_scale, kl_balance=args.kl_balance
@@ -182,8 +197,17 @@ reward_model = RewardModel(h_size=args.belief_size, s_size=args.state_size, hidd
                            activation=args.dense_activation_function).to(device=args.device)
 encoder = Encoder(args.symbolic_env, env.observation_size,
                   args.embedding_size, args.cnn_activation_function).to(device=args.device)
+"""
 actor_model = ActorModel(args.belief_size, args.state_size, args.hidden_size,
                          env.action_size, args.dense_activation_function).to(device=args.device)
+"""
+actor_model = CategoricalActorModel(
+                num_actions=env.num_action,
+                h_size=args.belief_size,
+                s_size=args.state_size,
+                num_layers=args.num_actor_layers,
+                num_units=args.num_actor_unit
+              ).to(device=args.device)
 value_model = ValueModel(args.belief_size, args.state_size, args.hidden_size,
                          args.dense_activation_function).to(device=args.device)
 param_list = list(transition_model.parameters()) \
@@ -209,10 +233,18 @@ if args.models != '' and os.path.exists(args.models):
     actor_model.load_state_dict(model_dicts['actor_model'])
     value_model.load_state_dict(model_dicts['value_model'])
     model_optimizer.load_state_dict(model_dicts['model_optimizer'])
+
+# prepare schedulers
+imag_grad_mix_sched = init_scheduler(config=args.imag_gradient_mix)
+actor_state_entropy = init_scheduler(config=args.actor_state_entropy)
+actor_entropy = init_scheduler(config=args.actor_entropy)
+
+# prepare actor
 if args.algo == "dreamer":
     print("DREAMER")
     planner = actor_model
 else:
+    #TODO: fix env.action_size(離散行動空間では使えない)
     planner = MPCPlanner(env.action_size, args.planning_horizon, args.optimisation_iters,
                          args.candidates, args.top_candidates, transition_model, reward_model)
 global_prior = Normal(torch.zeros(args.batch_size, args.state_size, device=args.device), torch.ones(
@@ -252,6 +284,7 @@ if args.test:
         total_reward = 0
         for _ in tqdm(range(args.test_episodes)):
             observation = env.reset()
+            #FIXME: 離散行動空間ではenv.action_sizeは使えない
             belief, posterior_state, action = torch.zeros(1, args.belief_size, device=args.device), torch.zeros(
                 1, args.state_size, device=args.device), torch.zeros(1, env.action_size, device=args.device)
             pbar = tqdm(range(args.max_episode_length // args.action_repeat))
@@ -307,26 +340,26 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         else:
             reward_mean = reward_model(
                 h_t=beliefs, s_t=posterior_states)['loc']
-            reward_loss = F.mse_loss(reward_mean, rewards[:-1], reduction='none').mean(dim=(0, 1))
+            reward_loss = F.mse_loss(
+                reward_mean, rewards[:-1], reduction='none').mean(dim=(0, 1))
 
         # transition loss
-        div = transition_model.calc_kld(current_step=s,
-                                        posterior_means=posterior_means,
-                                        posterior_std_devs=posterior_std_devs,
-                                        prior_means=prior_means,
-                                        prior_std_devs=prior_std_devs)
+        kl_loss = transition_model.calc_kld(current_step=s,
+                                            posterior_means=posterior_means,
+                                            posterior_std_devs=posterior_std_devs,
+                                            prior_means=prior_means,
+                                            prior_std_devs=prior_std_devs)
         """
         div = kl_divergence(Normal(posterior_means, posterior_std_devs), Normal(
             prior_means, prior_std_devs)).sum(dim=2)
         # Note that normalisation by overshooting distance and weighting by overshooting distance cancel out
         kl_loss = torch.max(div, free_nats).mean(dim=(0, 1))
-        """
-        #TODO: これどうするか考える
+        #TODO: これどうするか考える -> 消す
         if args.global_kl_beta != 0:
             kl_loss += args.global_kl_beta * kl_divergence(Normal(
                 posterior_means, posterior_std_devs), global_prior).sum(dim=2).mean(dim=(0, 1))
-
-        # Calculate latent overshooting objective for t > 0
+        """
+        # Calculate latent overshooting objective for t > 0 (This corresponds to behavior learning)
         if args.overshooting_kl_beta != 0:
             overshooting_vars = []  # Collect variables for overshooting to process in batch
             for t in range(1, args.chunk_size - 1):
@@ -370,7 +403,8 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         with FreezeParameters(model_modules):
             imagination_traj = imagine_ahead(
                 actor_states, actor_beliefs, actor_model, transition_model, args.planning_horizon)
-        imged_beliefs, imged_prior_states, imged_prior_means, imged_prior_std_devs = imagination_traj
+        imged_beliefs, imged_prior_states, imged_prior_means, imged_prior_std_devs, imged_actions = imagination_traj
+        # ERASEME: 価値関数(value_moodel)は変わらず正規分布のままなので、そのまま使える
         with FreezeParameters(model_modules + value_model.modules):
             imged_reward = reward_model(
                 h_t=imged_beliefs, s_t=imged_prior_states)['loc']
@@ -379,6 +413,18 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         returns = lambda_return(imged_reward, value_pred,
                                 bootstrap=value_pred[-1], discount=args.discount, lambda_=args.disclam)
         actor_loss = -torch.mean(returns)
+        # TODO: Implement Reinforce grad here
+        reinforce_loss = actor_model.get_log_prob(
+            action=imged_actions, h_t=imged_beliefs, s_t=imged_prior_states)[:-1]
+        reinforce_loss *= returns.detach() - value_pred[:-1]
+
+        ratio = imag_grad_mix_sched(s)
+        actor_loss = ratio * actor_loss + (1 - ratio) * reinforce_loss
+
+        #  TODO: policy entropyの項をactor_lossに追加(models.py 257行目に相当)
+        #TODO: actorの実装
+        # TODO: data collectionのときに行動にノイズ入れる処理を消す
+
         # Update model parameters
         actor_optimizer.zero_grad()
         actor_loss.backward()
@@ -427,6 +473,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
     # Data collection
     print("Data collection")
     with torch.no_grad():
+        #FIXME: 離散行動空間ではenv.action_sizeは使えない
         observation, total_reward = env.reset(), 0
         belief, posterior_state, action = torch.zeros(1, args.belief_size, device=args.device), torch.zeros(
             1, args.state_size, device=args.device), torch.zeros(1, env.action_size, device=args.device)
@@ -467,6 +514,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         with torch.no_grad():
             observation, total_rewards, video_frames = test_envs.reset(
             ), np.zeros((args.test_episodes, )), []
+            #FIXME: 離散行動空間では使えない
             belief, posterior_state, action = torch.zeros(args.test_episodes, args.belief_size, device=args.device), torch.zeros(
                 args.test_episodes, args.state_size, device=args.device), torch.zeros(args.test_episodes, env.action_size, device=args.device)
             pbar = tqdm(range(args.max_episode_length // args.action_repeat))

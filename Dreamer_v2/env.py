@@ -145,7 +145,13 @@ class GymEnv():
 
   @property
   def action_size(self):
+    """the size of the action space (Continuous action space)"""
     return self._env.action_space.shape[0]
+
+  @property
+  def num_action(self) -> int:
+    """number of the action available (Discrete action space)"""
+    return self._env.action_space.n
 
   # Sample an action randomly from a uniform distribution over all valid actions
   def sample_random_action(self):
