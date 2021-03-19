@@ -1,4 +1,4 @@
-from models import ActorModel, TransitionModel
+from models import CategoricalActorModel, TransitionModel
 import os
 import cv2
 import numpy as np
@@ -43,7 +43,8 @@ def write_video(frames, title, path=''):
     writer.write(frame)
   writer.release()
 
-def imagine_ahead(prev_state, prev_belief, policy: ActorModel, transition_model: TransitionModel, planning_horizon=12):
+
+def imagine_ahead(prev_state, prev_belief, policy: CategoricalActorModel, transition_model: TransitionModel, planning_horizon=12):
   '''
   imagine_ahead is the function to draw the imaginary tracjectory using the dynamics model, actor, critic.
   Input: current state (posterior), current belief (hidden), policy, transition_model  # torch.Size([50, 30]) torch.Size([50, 200])

@@ -11,7 +11,7 @@ from torch.nn import RNNCellBase
 import numpy as np
 from pixyz.distributions import Normal
 
-from .schedulers import init_scheduler
+from schedulers import init_scheduler
 # Wraps the input tuple for a function to process a (time, batch, features sequence in batch, features) (assumes one output)
 
 
@@ -59,7 +59,7 @@ class TransitionModel(nn.Module):
             belief_size=belief_size, norm=not disable_gru_norm)
         # pixyz dists
         self.stochastic_state_model = StochasticStateModel(
-            h_size=belief_size, s_size=state_size, hidden_size=hidden_size, activation=self.act_fn, min_std_dev=self.min_std_dev)
+            h_size=belief_size, s_size=state_size, hidden_size=hidden_size, min_std_dev=self.min_std_dev)
 
         self.obs_encoder = ObsEncoder(
             h_size=belief_size, s_size=state_size, activation=self.act_fn, embedding_size=embedding_size, hidden_size=hidden_size, min_std_dev=self.min_std_dev)
@@ -87,14 +87,13 @@ class TransitionModel(nn.Module):
         generate a sequence of data
 
         Input: init_belief, init_state:  torch.Size([50, 200]) torch.Size([50, 30])
-        Output: beliefs, prior_states, prior_means, prior_std_devs, posterior_states, posterior_means, posterior_std_devs
-                    torch.Size([49, 50, 200]) torch.Size([49, 50, 30]) torch.Size([49, 50, 30]) torch.Size([49, 50, 30]) torch.Size([49, 50, 30]) torch.Size([49, 50, 30]) torch.Size([49, 50, 30])
+        Output: beliefs, prior_states, prior_logits, posterior_states, posterior_logits
         '''
         # Create lists for hidden states (cannot use single tensor as buffer because autograd won't work with inplace writes)
         T = actions.size(0) + 1
-        beliefs, prior_states, prior_means, prior_std_devs, posterior_states, posterior_means, posterior_std_devs = \
-            [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(
-                0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T
+        beliefs, prior_states, prior_logits, posterior_states, posterior_logits = \
+            [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(
+                0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T
         beliefs[0], posterior_states[0], posterior_states[0] = prev_belief, prev_state, prev_state
 
         # Loop over time sequence
@@ -113,9 +112,7 @@ class TransitionModel(nn.Module):
             # s_t ~ p(s_t | h_t) (Stochastic State Model)
             prior_states[t + 1] = self.stochastic_state_model.sample(
                 {'h_t': beliefs[t + 1]}, reparam=True)["s_t"]
-            loc_and_scale = self.stochastic_state_model(h_t=beliefs[t + 1])
-            prior_means[t + 1], prior_std_devs[t +
-                                               1] = loc_and_scale['loc'], loc_and_scale['scale']
+            prior_logits[t + 1] = self.stochastic_state_model(h_t=beliefs[t + 1])["probs"]
 
             if observations is not None:
                 # Compute state posterior by applying transition dynamics and using current observation
@@ -123,34 +120,32 @@ class TransitionModel(nn.Module):
                 t_ = t - 1  # Use t_ to deal with different time indexing for observations
                 posterior_states[t + 1] = self.obs_encoder.sample(
                     {'h_t': beliefs[t + 1], 'o_t': observations[t_ + 1]}, reparam=True)['s_t']
-                loc_and_scale = self.obs_encoder(
-                    h_t=beliefs[t + 1], o_t=observations[t_ + 1])
-                posterior_means[t + 1] = loc_and_scale['loc']
-                posterior_std_devs[t + 1] = loc_and_scale['scale']
+                posterior_logits[t + 1] = self.obs_encoder(
+                    h_t=beliefs[t + 1], o_t=observations[t_ + 1])['probs']
 
         # Return new hidden states
         hidden = [torch.stack(beliefs[1:], dim=0), torch.stack(prior_states[1:], dim=0), torch.stack(
-            prior_means[1:], dim=0), torch.stack(prior_std_devs[1:], dim=0)]
+            prior_logits[1:], dim=0)]
         if observations is not None:
             hidden += [torch.stack(posterior_states[1:], dim=0), torch.stack(
-                posterior_means[1:], dim=0), torch.stack(posterior_std_devs[1:], dim=0)]
+                posterior_logits[1:], dim=0)]
         return hidden
 
-    def calc_kld(self, current_step: int, posterior: torch.Tensor, prior: torch.Tensor) -> Tuple[float, torch.Tensor]:
+    def calc_kld(self, current_step: int, posterior_logits: torch.Tensor, prior_logits: torch.Tensor) -> Tuple[float, torch.Tensor]:
         """calculate KL Divergence for the given priors and posteriors"""
         # get constants using schedulers
         kl_free = self.kl_free_sched(current_step)
         kl_balance = self.kl_balance_sched(current_step)
         kl_scale = self.kl_scale_sched(current_step)
-        dist = torch.distributions.Independent(ModifiedCategorical, 1)
+        dist = lambda probs: torch.distributions.Independent(ModifiedCategorical(probs=probs), 1)
         if kl_balance == 0.5:
-            value = kl_divergence(dist(posterior), dist(prior))
+            value = kl_divergence(dist(posterior_logits), dist(prior_logits))
             loss = value.mean()  # this value should be (1, )
         else:
-            value_lhs = kl_divergence(dist(posterior), dist(prior.detach()))
-            loss_lhs = torch.maximum(value_lhs.mean(), kl_free)
-            value_rhs = kl_divergence(dist(posterior.detach()), dist(prior))
-            loss_lhs = torch.maximum(value_rhs.mean(), kl_free)
+            value_lhs = value = kl_divergence(dist(posterior_logits), dist(prior_logits.detach()))
+            loss_lhs = torch.max(value_lhs.mean(), torch.tensor(kl_free))
+            value_rhs = kl_divergence(dist(posterior_logits.detach()), dist(prior_logits))
+            loss_lhs = torch.max(value_rhs.mean(), torch.tensor(kl_free))
             loss = (1 - kl_balance) * loss_lhs + kl_balance * kl_balance
 
         loss *= kl_scale
@@ -181,8 +176,8 @@ class DenseDecoder(Normal):
         return {'loc': observation, 'scale': 1.0}
 
 
-class ObsEncoder(Normal):
-    """o_t ~ p(o_t | h_t, s_t)"""
+class ObsEncoder(Categorical):
+    """s_t ~ p(s_t | h_t, o_t)"""
 
     def __init__(self, h_size: int, s_size: int, activation: nn.Module, embedding_size: int, hidden_size: int, min_std_dev: float):
 
@@ -190,35 +185,37 @@ class ObsEncoder(Normal):
         self.activation = activation
         self.fc1 = nn.Linear(
             h_size + embedding_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, 2 * s_size)
+        self.fc2 = nn.Linear(hidden_size, s_size)
         self.min_std_dev = min_std_dev
+        self.softmax = nn.Softmax(dim=-1)
         self.modules = [self.fc1, self.fc2]
 
     def forward(self, h_t: torch.Tensor, o_t: torch.Tensor) -> Dict:
         hidden = self.activation(self.fc1(torch.cat([h_t, o_t], dim=1)))
-        loc, scale = torch.chunk(self.fc2(hidden), 2, dim=1)
-        scale = F.softplus(scale) + self.min_std_dev
-        return {"loc": loc, "scale": scale}
+        hidden = self.softmax(self.activation(self.fc2(hidden)))
+        return {"probs": hidden}
 
 
-class StochasticStateModel(Normal):
+class StochasticStateModel(distributions.Categorical):
     """p(s_t | h_t)"""
 
-    def __init__(self, h_size: int, hidden_size: int, activation: nn.Module, s_size: int, min_std_dev: float):
+    def __init__(self, h_size: int, hidden_size: int, s_size: int, min_std_dev: float, activation: callable = nn.ELU):
 
         super().__init__(var=['s_t'], cond_var=[
             'h_t'], name="StochasticStateModel")
-        self.fc1 = nn.Linear(h_size, hidden_size)
-        self.fc2 = nn.Linear(hidden_size, 2 * s_size)
+        self.fcs = nn.Sequential(
+            nn.Linear(h_size, hidden_size),
+            activation(),
+            nn.Linear(hidden_size, s_size),
+            activation(),
+            nn.Softmax(dim=-1)
+        )
         self.activation = activation
         self.min_std_dev = min_std_dev
 
     def forward(self, h_t) -> Dict:
-        hidden = self.activation(self.fc1(h_t))
-        loc, scale = torch.chunk(
-            self.fc2(hidden), 2, dim=1)
-        scale = F.softplus(scale) + self.min_std_dev
-        return {"loc": loc, "scale": scale}
+        hidden = self.fcs(h_t)
+        return {"probs": hidden}
 
 
 class ConvDecoder(Normal):
@@ -321,7 +318,7 @@ class ValueModel(Normal):
 
 
 class Pie(Normal):
-    def __init__(self, belief_size: int, state_size: int, hidden_size: int, action_size: int, dist: str =      'tanh_normal',
+    def __init__(self, belief_size: int, state_size: int, hidden_size: int, num_action: int, dist: str = 'tanh_normal',
                  activation_function: str =      'elu', min_std: float =      1e-4, init_std: float      =      5, mean_scale: float =      5):
         super().__init__(cond_var=['h_t', 's_t'], var=['a_t'])
         self.act_fn = getattr(F, activation_function)
@@ -329,7 +326,7 @@ class Pie(Normal):
         self.fc2 = nn.Linear(hidden_size, hidden_size)
         self.fc3 = nn.Linear(hidden_size, hidden_size)
         self.fc4 = nn.Linear(hidden_size, hidden_size)
-        self.fc5 = nn.Linear(hidden_size, 2*action_size)
+        self.fc5 = nn.Linear(hidden_size, 2*num_action)
         self.modules = [self.fc1, self.fc2, self.fc3, self.fc4, self.fc5]
 
         self._dist = dist
@@ -354,11 +351,13 @@ class Pie(Normal):
         return {'loc': action_mean, 'scale': action_std}
 
 
+"""
 class ActorModel(nn.Module):
-    def __init__(self, belief_size: int, state_size: int, hidden_size: int, action_size: int, dist: str =      'tanh_normal',
+    def __init__(self, belief_size: int, state_size: int, hidden_size: int, num_action: int, dist: str = 'tanh_normal',
                  activation_function: str =      'elu', min_std: float =      1e-4, init_std: float =      5, mean_scale: float =      5):
         super().__init__()
-        self.pie = Pie(belief_size, state_size, hidden_size, action_size, dist=dist,
+        #TODO: rewrite this by Categorical dist
+        self.pie = Pie(belief_size, state_size, hidden_size, num_action, dist=dist,
                        activation_function=activation_function, min_std=min_std, init_std=init_std, mean_scale=mean_scale)
 
     def get_action(self, belief: torch.Tensor, state: torch.Tensor, det: bool =      False) -> torch.Tensor:
@@ -381,13 +380,14 @@ class ActorModel(nn.Module):
             return torch.tanh(self.pie.sample({'h_t': belief, 's_t': state}, reparam=True)['a_t'])
 
     def get_log_prob(self, action: torch.Tensor, h_t: torch.Tensor, s_t: torch.Tensor) -> torch.Tensor:
-        """Calculate log probability of the given action"""
+        # Calculate log probability of the given action
         #TODO: check this impl
         gaussian_logprob = self.pie.get_log_prob(
             {'a_t': torch.atanh(action), "h_t": h_t, "s_t": s_t}, sum_features=False)
         logprob = gaussian_logprob - torch.log(1 - action.pow(2) + 1e-6)
         logprob = logprob.sum(dim=-1)
         return logprob
+"""
 
 
 class CategoricalActorModel(distributions.Categorical):
@@ -395,12 +395,13 @@ class CategoricalActorModel(distributions.Categorical):
         super().__init__(cond_var=['h_t', 's_t'], var=['a_t'])
         assert num_layers >= 2, f'This model requires at least 2 layers, but {num_layers} are given'
         layers = [nn.Linear(in_features=h_size + s_size,
-                            out_features=num_units), activation]
+                            out_features=num_units), activation()]
         for _ in range(num_layers - 2):
             layers.append(
                 nn.Linear(in_features=num_units, out_features=num_units))
-            layers.append(activation)
-        self.fc = nn.Sequential(layers)
+            layers.append(activation())
+        layers.append(nn.Softmax(dim=-1))
+        self.fc = nn.Sequential(*layers)
 
     def forward(self, h_t: torch.Tensor, s_t: torch.Tensor) -> Dict:
         inputs = torch.cat([h_t, s_t], axis=-1)

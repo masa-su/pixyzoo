@@ -5,13 +5,14 @@ from numpy.core.fromnumeric import compress
 import torch
 from torch import nn, optim
 from torch.distributions import Normal
+from torch.distributions.categorical import Categorical
 from torch.distributions.kl import kl_divergence
 from torch.nn import functional as F
 from torchvision.utils import make_grid, save_image
 from tqdm import tqdm
-from env import CONTROL_SUITE_ENVS, Env, GYM_ENVS, EnvBatcher
+from env import CONTROL_SUITE_ENVS, Env, GYM_ENVS, ATARI_ENVS, EnvBatcher
 from memory import ExperienceReplay
-from models import CategoricalActorModel, bottle_tuple, Encoder, ObservationModel, RewardModel, TransitionModel, ValueModel, ActorModel
+from models import CategoricalActorModel, bottle_tuple, Encoder, ObservationModel, RewardModel, TransitionModel, ValueModel
 from planner import MPCPlanner
 from utils import lineplot, imagine_ahead, lambda_return, FreezeParameters
 from tensorboardX import SummaryWriter
@@ -28,7 +29,7 @@ parser.add_argument('--seed', type=int, default=1,
                     metavar='S', help='Random seed')
 parser.add_argument('--disable-cuda', action='store_true', help='Disable CUDA')
 parser.add_argument('--env', type=str, default='Pendulum-v0', choices=GYM_ENVS +
-                    CONTROL_SUITE_ENVS, help='Gym/Control Suite environment')
+                    CONTROL_SUITE_ENVS + ATARI_ENVS, help='Gym/Control Suite environment')
 parser.add_argument('--symbolic-env', action='store_true',
                     help='Symbolic features')
 parser.add_argument('--max-episode-length', type=int,
@@ -170,7 +171,7 @@ if args.experience_replay != '' and os.path.exists(args.experience_replay):
 elif not args.test:
     #TODO: fix replay buffer(env.action_sizeはDiscrete action spaceでは使えない)
     D = ExperienceReplay(args.experience_size, args.symbolic_env,
-                         env.observation_size, env.action_size, args.bit_depth, args.device)
+                         env.observation_size, env.num_action, args.bit_depth, args.device)
     # Initialise dataset D with S random seed episodes
     for s in range(1, args.seed_episodes + 1):
         observation, done, t = env.reset(), False, 0
@@ -187,9 +188,16 @@ elif not args.test:
 
 # Initialise model parameters randomly
 #FIXME: env.action_sizeは使えない
-transition_model = TransitionModel(args.belief_size, args.state_size, env.action_size,
-                                   args.hidden_size, args.embedding_size, args.dense_activation_function, disable_gru_norm=args.disable_gru_norm,
-                                   kl_free=args.kl_free, kl_scale=args.kl_scale, kl_balance=args.kl_balance
+transition_model = TransitionModel(belief_size=args.belief_size,
+                                   state_size=args.state_size,
+                                   num_action=env.num_action,
+                                   hidden_size=args.hidden_size,
+                                   embedding_size=args.embedding_size,
+                                   activation_function=args.dense_activation_function,
+                                   disable_gru_norm=args.disable_gru_norm,
+                                   kl_free=args.kl_free,
+                                   kl_scale=args.kl_scale,
+                                   kl_balance=args.kl_balance
                                    ).to(device=args.device)
 observation_model = ObservationModel(args.symbolic_env, env.observation_size, args.belief_size,
                                      args.state_size, args.embedding_size, args.cnn_activation_function).to(device=args.device)
@@ -206,7 +214,7 @@ actor_model = CategoricalActorModel(
                 h_size=args.belief_size,
                 s_size=args.state_size,
                 num_layers=args.num_actor_layers,
-                num_units=args.num_actor_unit
+    num_units=args.num_actor_units
               ).to(device=args.device)
 value_model = ValueModel(args.belief_size, args.state_size, args.hidden_size,
                          args.dense_activation_function).to(device=args.device)
@@ -245,8 +253,8 @@ if args.algo == "dreamer":
     planner = actor_model
 else:
     #TODO: fix env.action_size(離散行動空間では使えない)
-    planner = MPCPlanner(env.action_size, args.planning_horizon, args.optimisation_iters,
-                         args.candidates, args.top_candidates, transition_model, reward_model)
+    planner = MPCPlanner(env.num_action, args.planning_horizon, args.optimisation_iters,
+                         args.candidates, args.top_candidates, transition_model, reward_model)  # TODO: num_actionに変えたが大丈夫か確認
 global_prior = Normal(torch.zeros(args.batch_size, args.state_size, device=args.device), torch.ones(
     args.batch_size, args.state_size, device=args.device))  # Global prior N(0, I)
 # Allowed deviation in KL divergence
@@ -255,7 +263,7 @@ free_nats = torch.full((1, ), args.free_nats, device=args.device)
 
 def update_belief_and_act(args, env, planner, transition_model, encoder, belief, posterior_state, action, observation, explore=False):
     # Infer belief over current state q(s_t|o≤t,a<t) from the history
-    belief, _, _, _, posterior_state, _, _ = transition_model(posterior_state, action.unsqueeze(
+    belief, _, _, posterior_state, _ = transition_model(posterior_state, action.unsqueeze(
         dim=0), belief, encoder(observation).unsqueeze(dim=0))  # Action and observation need extra time dimension
     belief, posterior_state = belief.squeeze(dim=0), posterior_state.squeeze(
         dim=0)  # Remove time dimension from belief/state
@@ -286,7 +294,7 @@ if args.test:
             observation = env.reset()
             #FIXME: 離散行動空間ではenv.action_sizeは使えない
             belief, posterior_state, action = torch.zeros(1, args.belief_size, device=args.device), torch.zeros(
-                1, args.state_size, device=args.device), torch.zeros(1, env.action_size, device=args.device)
+                1, args.state_size, device=args.device), torch.zeros(1, env.num_action, device=args.device)
             pbar = tqdm(range(args.max_episode_length // args.action_repeat))
             for t in pbar:
                 belief, posterior_state, action, observation, reward, done = update_belief_and_act(
@@ -318,7 +326,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         init_belief, init_state = torch.zeros(args.batch_size, args.belief_size, device=args.device), torch.zeros(
             args.batch_size, args.state_size, device=args.device)
         # Update belief/state using posterior from previous belief/state, previous action and current observation (over entire sequence at once)
-        beliefs, prior_states, prior_means, prior_std_devs, posterior_states, posterior_means, posterior_std_devs = transition_model(
+        beliefs, prior_states, prior_logits, posterior_states, posterior_logits = transition_model(
             init_state, actions[:-1], init_belief, bottle_tuple(encoder, (observations[1:], )), nonterminals[:-1])
 
         # Calculate observation likelihood, reward likelihood and KL losses (for t = 0 only for latent overshooting); sum over final dims, average over batch and time (original implementation, though paper seems to miss 1/T scaling?)
@@ -344,11 +352,9 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 reward_mean, rewards[:-1], reduction='none').mean(dim=(0, 1))
 
         # transition loss
-        kl_loss = transition_model.calc_kld(current_step=s,
-                                            posterior_means=posterior_means,
-                                            posterior_std_devs=posterior_std_devs,
-                                            prior_means=prior_means,
-                                            prior_std_devs=prior_std_devs)
+        kl_loss, value = transition_model.calc_kld(current_step=s,
+                                            posterior_logits=posterior_logits,
+                                            prior_logits=prior_logits) #TODO: valueの使いみちを著者実装で確認
         """
         div = kl_divergence(Normal(posterior_means, posterior_std_devs), Normal(
             prior_means, prior_std_devs)).sum(dim=2)
@@ -369,17 +375,19 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 t_, d_ = t - 1, d - 1
                 # Calculate sequence padding so overshooting terms can be calculated in one batch
                 seq_pad = (0, 0, 0, 0, 0, t - d + args.overshooting_distance)
-                # Store (0) actions, (1) nonterminals, (2) rewards, (3) beliefs, (4) prior states, (5) posterior means, (6) posterior standard deviations and (7) sequence masks
-                overshooting_vars.append((F.pad(actions[t:d], seq_pad), F.pad(nonterminals[t:d], seq_pad), F.pad(rewards[t:d], seq_pad[2:]), beliefs[t_], prior_states[t_], F.pad(posterior_means[t_ + 1:d_ + 1].detach(), seq_pad), F.pad(
-                    posterior_std_devs[t_ + 1:d_ + 1].detach(), seq_pad, value=1), F.pad(torch.ones(d - t, args.batch_size, args.state_size, device=args.device), seq_pad)))  # Posterior standard deviations must be padded with > 0 to prevent infinite KL divergences
+                # FIXME: (old) Store (0) actions, (1) nonterminals, (2) rewards, (3) beliefs, (4) prior states, (5) posterior means, (6) posterior standard deviations and (7) sequence masks
+                #  (new) Store (0) actions, (1) nonterminals, (2) rewards, (3) beliefs, (4) prior states, (5) posterior logits, (6) sequence masks
+                overshooting_vars.append((F.pad(actions[t:d], seq_pad), F.pad(nonterminals[t:d], seq_pad), F.pad(rewards[t:d], seq_pad[2:]), beliefs[t_], prior_states[t_], F.pad(posterior_logits[t_ + 1:d_ + 1].detach(), seq_pad), F.pad(torch.ones(d - t, args.batch_size, args.state_size, device=args.device), seq_pad)))
+                # Posterior standard deviations must be padded with > 0 to prevent infinite KL divergences
+
             overshooting_vars = tuple(zip(*overshooting_vars))
             # Update belief/state using prior from previous belief/state and previous action (over entire sequence at once)
-            beliefs, prior_states, prior_means, prior_std_devs = transition_model(torch.cat(overshooting_vars[4], dim=0), torch.cat(
+            beliefs, prior_states, prior_logits = transition_model(torch.cat(overshooting_vars[4], dim=0), torch.cat(
                 overshooting_vars[0], dim=1), torch.cat(overshooting_vars[3], dim=0), None, torch.cat(overshooting_vars[1], dim=1))
-            seq_mask = torch.cat(overshooting_vars[7], dim=1)
+            seq_mask = torch.cat(overshooting_vars[6], dim=1)
             # Calculate overshooting KL loss with sequence mask
-            kl_loss += (1 / args.overshooting_distance) * args.overshooting_kl_beta * torch.max((kl_divergence(Normal(torch.cat(overshooting_vars[5], dim=1), torch.cat(overshooting_vars[6], dim=1)), Normal(
-                prior_means, prior_std_devs)) * seq_mask).sum(dim=2), free_nats).mean(dim=(0, 1)) * (args.chunk_size - 1)  # Update KL loss (compensating for extra average over each overshooting/open loop sequence)
+            kl_loss += (1 / args.overshooting_distance) * args.overshooting_kl_beta * torch.max((kl_divergence(Categorical(torch.cat(overshooting_vars[5], dim=1)), Categorical(
+                prior_logits)) * seq_mask).sum(dim=2), free_nats).mean(dim=(0, 1)) * (args.chunk_size - 1)  # Update KL loss (compensating for extra average over each overshooting/open loop sequence)
             # Calculate overshooting reward prediction loss with sequence mask
             if args.overshooting_reward_scale != 0:
                 reward_loss += (1 / args.overshooting_distance) * args.overshooting_reward_scale * F.mse_loss(reward_model(beliefs, prior_states)['loc'] * seq_mask[:, :, 0], torch.cat(
