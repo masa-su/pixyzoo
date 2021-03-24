@@ -45,6 +45,7 @@ class ModifiedCategorical(torch.distributions.OneHotCategorical):
         sample += probs - probs.detach()  # Straight-Through Gradients with Auto-Diff
         return sample
 
+
 class TransitionModel(nn.Module):
     __constants__ = ['min_std_dev']
 
@@ -112,7 +113,8 @@ class TransitionModel(nn.Module):
             # s_t ~ p(s_t | h_t) (Stochastic State Model)
             prior_states[t + 1] = self.stochastic_state_model.sample(
                 {'h_t': beliefs[t + 1]}, reparam=True)["s_t"]
-            prior_logits[t + 1] = self.stochastic_state_model(h_t=beliefs[t + 1])["probs"]
+            prior_logits[t +
+                         1] = self.stochastic_state_model(h_t=beliefs[t + 1])["probs"]
 
             if observations is not None:
                 # Compute state posterior by applying transition dynamics and using current observation
@@ -137,14 +139,17 @@ class TransitionModel(nn.Module):
         kl_free = self.kl_free_sched(current_step)
         kl_balance = self.kl_balance_sched(current_step)
         kl_scale = self.kl_scale_sched(current_step)
-        dist = lambda probs: torch.distributions.Independent(ModifiedCategorical(probs=probs), 1)
+        def dist(probs): return torch.distributions.Independent(
+            ModifiedCategorical(probs=probs), 1)
         if kl_balance == 0.5:
             value = kl_divergence(dist(posterior_logits), dist(prior_logits))
             loss = value.mean()  # this value should be (1, )
         else:
-            value_lhs = value = kl_divergence(dist(posterior_logits), dist(prior_logits.detach()))
+            value_lhs = value = kl_divergence(
+                dist(posterior_logits), dist(prior_logits.detach()))
             loss_lhs = torch.max(value_lhs.mean(), torch.tensor(kl_free))
-            value_rhs = kl_divergence(dist(posterior_logits.detach()), dist(prior_logits))
+            value_rhs = kl_divergence(
+                dist(posterior_logits.detach()), dist(prior_logits))
             loss_lhs = torch.max(value_rhs.mean(), torch.tensor(kl_free))
             loss = (1 - kl_balance) * loss_lhs + kl_balance * kl_balance
 
@@ -153,7 +158,7 @@ class TransitionModel(nn.Module):
 
 
 class DenseDecoder(Normal):
-    def __init__(self, observation_size: torch.Tensor, belief_size: torch.Tensor, state_size: int, embedding_size: int, activation_function: str =      'relu'):
+    def __init__(self, observation_size: torch.Tensor, belief_size: torch.Tensor, state_size: int, embedding_size: int, activation_function: str = 'relu'):
         super().__init__(var=['o_t'], cond_var=['h_t', 's_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, embedding_size)
@@ -221,7 +226,7 @@ class StochasticStateModel(distributions.Categorical):
 class ConvDecoder(Normal):
     __constants__ = ['embedding_size']
 
-    def __init__(self, belief_size: int, state_size: int, embedding_size: int, activation_function: str =      'relu'):
+    def __init__(self, belief_size: int, state_size: int, embedding_size: int, activation_function: str = 'relu'):
         super().__init__(var=['o_t'], cond_var=['h_t', 's_t'])
         self.act_fn = getattr(F, activation_function)
         self.embedding_size = embedding_size
@@ -289,7 +294,7 @@ class RewardModel(Normal):
 
 
 class ValueModel(Normal):
-    def __init__(self, belief_size: int, state_size: int, hidden_size: int, activation_function: str =      'relu'):
+    def __init__(self, belief_size: int, state_size: int, hidden_size: int, activation_function: str = 'relu'):
         super().__init__(cond_var=['h_t', 's_t'], var=['r_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, hidden_size)
@@ -319,7 +324,7 @@ class ValueModel(Normal):
 
 class Pie(Normal):
     def __init__(self, belief_size: int, state_size: int, hidden_size: int, num_action: int, dist: str = 'tanh_normal',
-                 activation_function: str =      'elu', min_std: float =      1e-4, init_std: float      =      5, mean_scale: float =      5):
+                 activation_function: str = 'elu', min_std: float = 1e-4, init_std: float = 5, mean_scale: float = 5):
         super().__init__(cond_var=['h_t', 's_t'], var=['a_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, hidden_size)
@@ -400,6 +405,7 @@ class CategoricalActorModel(distributions.Categorical):
             layers.append(
                 nn.Linear(in_features=num_units, out_features=num_units))
             layers.append(activation())
+        layers.append(nn.Linear(in_features=num_units, out_features=num_actions))
         layers.append(nn.Softmax(dim=-1))
         self.fc = nn.Sequential(*layers)
 
@@ -408,8 +414,17 @@ class CategoricalActorModel(distributions.Categorical):
         out = self.fc(inputs)
         return {'probs': out}
 
+    def get_action(self, h_t: torch.Tensor, s_t: torch.Tensor, det: bool = False) -> torch.Tensor:
+        if det:
+            probs = self.forward(h_t=h_t, s_t=s_t)["probs"]
+            action = np.argmax(probs, axis=-1)
+            return action
+        else:
+            return self.sample({"h_t": h_t, "s_t": s_t}, reparam=True)["a_t"]
+
+
 class SymbolicEncoder(jit.ScriptModule):
-    def __init__(self, observation_size: int, embedding_size: int, activation_function: str =      'relu'):
+    def __init__(self, observation_size: int, embedding_size: int, activation_function: str = 'relu'):
         super().__init__()
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(observation_size, embedding_size)
@@ -452,7 +467,7 @@ class VisualEncoder(jit.ScriptModule):
         return hidden
 
 
-def Encoder(symbolic: bool, observation_size: int, embedding_size: int, activation_function: str ='relu') -> Union[SymbolicEncoder, VisualEncoder]:
+def Encoder(symbolic: bool, observation_size: int, embedding_size: int, activation_function: str = 'relu') -> Union[SymbolicEncoder, VisualEncoder]:
     if symbolic:
         return SymbolicEncoder(observation_size, embedding_size, activation_function)
     else:
@@ -469,13 +484,13 @@ class NormGRUCell(nn.Module):
         self._layer = nn.Linear(
             2 * belief_size, 3 * belief_size, bias=norm is not None, **kwargs)
         if norm:
-          self._norm = nn.LayerNorm(normalized_shape=3*belief_size, eps=1e-3)
+            self._norm = nn.LayerNorm(normalized_shape=3*belief_size, eps=1e-3)
 
     def forward(self, inputs, state):
         # state = state[0]  # Keras wraps the state in a list.
         parts = self._layer(torch.cat([inputs, state], -1))
         if self._norm:
-           parts = self._norm(parts)
+            parts = self._norm(parts)
         reset, cand, update = torch.chunk(parts, 3, -1)
         # print(reset.size(), cand.size(), update.size()) # (50, 400)
         reset = torch.sigmoid(reset)

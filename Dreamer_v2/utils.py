@@ -73,13 +73,10 @@ def imagine_ahead(prev_state, prev_belief, policy: CategoricalActorModel, transi
     # Compute state prior by applying transition dynamics
     prior_states[t + 1] = transition_model.stochastic_state_model.sample(
         {'h_t': beliefs[t + 1]}, reparam=True)['s_t']
-    loc_and_scale = transition_model.stochastic_state_model(h_t=beliefs[t + 1])
-    prior_std_devs[t + 1] = loc_and_scale['scale']
-    prior_means[t + 1] = loc_and_scale['loc']
 
   # Return new hidden states
   # imagined_traj = [beliefs, prior_states, prior_means, prior_std_devs, actions]
-  imagined_traj = [torch.stack(beliefs[1:], dim=0), torch.stack(prior_states[1:], dim=0), torch.stack(prior_means[1:], dim=0), torch.stack(prior_std_devs[1:], dim=0),  torch.stack(actions[1:], dim=0)]
+  imagined_traj = [torch.stack(beliefs[1:], dim=0), torch.stack(prior_states[1:], dim=0), torch.stack(actions[1:], dim=0)]
   return imagined_traj
 
 def lambda_return(imged_reward, value_pred, bootstrap, discount=0.99, lambda_=0.95):

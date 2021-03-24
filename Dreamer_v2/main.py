@@ -411,7 +411,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         with FreezeParameters(model_modules):
             imagination_traj = imagine_ahead(
                 actor_states, actor_beliefs, actor_model, transition_model, args.planning_horizon)
-        imged_beliefs, imged_prior_states, imged_prior_means, imged_prior_std_devs, imged_actions = imagination_traj
+        imged_beliefs, imged_prior_states, imged_actions = imagination_traj
         # ERASEME: 価値関数(value_moodel)は変わらず正規分布のままなので、そのまま使える
         with FreezeParameters(model_modules + value_model.modules):
             imged_reward = reward_model(
@@ -423,11 +423,12 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         actor_loss = -torch.mean(returns)
         # TODO: Implement Reinforce grad here
         reinforce_loss = actor_model.get_log_prob(
-            action=imged_actions, h_t=imged_beliefs, s_t=imged_prior_states)[:-1]
-        reinforce_loss *= returns.detach() - value_pred[:-1]
+            {"a_t": imged_actions, "h_t": imged_beliefs, "s_t": imged_prior_states}, sum_features=False)[:-1]
+        reinforce_loss *= returns.detach()[:-1] - value_pred[:-1]
+        reinforce_loss = -torch.mean(reinforce_loss)
 
         ratio = imag_grad_mix_sched(s)
-        actor_loss = ratio * actor_loss + (1 - ratio) * reinforce_loss
+        actor_loss += ratio * actor_loss + (1 - ratio) * reinforce_loss
 
         #  TODO: policy entropyの項をactor_lossに追加(models.py 257行目に相当)
         #TODO: actorの実装
@@ -484,7 +485,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         #FIXME: 離散行動空間ではenv.action_sizeは使えない
         observation, total_reward = env.reset(), 0
         belief, posterior_state, action = torch.zeros(1, args.belief_size, device=args.device), torch.zeros(
-            1, args.state_size, device=args.device), torch.zeros(1, env.action_size, device=args.device)
+            1, args.state_size, device=args.device), torch.zeros(1, env.num_action, device=args.device)
         pbar = tqdm(range(args.max_episode_length // args.action_repeat))
         for t in pbar:
             belief, posterior_state, action, next_observation, reward, done = update_belief_and_act(

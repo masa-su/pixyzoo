@@ -4,7 +4,8 @@ from typing import Union, final
 from abc import ABC
 import re
 
-
+def clamp(x: Union[float, int]):
+    return max(min(1, x), 0)
 class BaseScheduler(ABC):
     def __init__(self):
         raise NotImplementedError
@@ -29,7 +30,7 @@ class LinearScheduler(BaseScheduler):
         self.num_step = num_step
 
     def __call__(self, step: int) -> Union[float, int]:
-        ratio = torch.clamp(step / self.num_step, 0, 1)
+        ratio = clamp(step / self.num_step)
         return (1 - ratio) * self.initial + ratio * self.final
 
 
@@ -39,7 +40,7 @@ class WarmupScheduler(BaseScheduler):
         self.value = value
 
     def __call__(self, step: int) -> Union[float, int]:
-        scale = torch.clamp(step / self.warmup, 0, 1)
+        scale = clamp(step / self.warmup)
         return scale * self.value
 
 
@@ -60,7 +61,7 @@ class HorizonScheduler(BaseScheduler):
         self.num_step = num_step
 
     def __call__(self, step: int) -> Union[float, int]:
-        ratio = torch.clamp(step / self.num_step, 0, 1)
+        ratio = clamp(step / self.num_step)
         horizon = (1 - ratio) * self.initial_value + ratio * self.final_value
         return 1 - 1 / horizon
 
