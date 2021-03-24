@@ -205,10 +205,6 @@ reward_model = RewardModel(h_size=args.belief_size, s_size=args.state_size, hidd
                            activation=args.dense_activation_function).to(device=args.device)
 encoder = Encoder(args.symbolic_env, env.observation_size,
                   args.embedding_size, args.cnn_activation_function).to(device=args.device)
-"""
-actor_model = ActorModel(args.belief_size, args.state_size, args.hidden_size,
-                         env.action_size, args.dense_activation_function).to(device=args.device)
-"""
 actor_model = CategoricalActorModel(
                 num_actions=env.num_action,
                 h_size=args.belief_size,
@@ -244,8 +240,8 @@ if args.models != '' and os.path.exists(args.models):
 
 # prepare schedulers
 imag_grad_mix_sched = init_scheduler(config=args.imag_gradient_mix)
-actor_state_entropy = init_scheduler(config=args.actor_state_entropy)
-actor_entropy = init_scheduler(config=args.actor_entropy)
+actor_state_entropy_sched = init_scheduler(config=args.actor_state_entropy)
+actor_entropy_sched = init_scheduler(config=args.actor_entropy)
 
 # prepare actor
 if args.algo == "dreamer":
@@ -355,16 +351,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         kl_loss, value = transition_model.calc_kld(current_step=s,
                                             posterior_logits=posterior_logits,
                                             prior_logits=prior_logits) #TODO: valueの使いみちを著者実装で確認
-        """
-        div = kl_divergence(Normal(posterior_means, posterior_std_devs), Normal(
-            prior_means, prior_std_devs)).sum(dim=2)
-        # Note that normalisation by overshooting distance and weighting by overshooting distance cancel out
-        kl_loss = torch.max(div, free_nats).mean(dim=(0, 1))
-        #TODO: これどうするか考える -> 消す
-        if args.global_kl_beta != 0:
-            kl_loss += args.global_kl_beta * kl_divergence(Normal(
-                posterior_means, posterior_std_devs), global_prior).sum(dim=2).mean(dim=(0, 1))
-        """
+
         # Calculate latent overshooting objective for t > 0 (This corresponds to behavior learning)
         if args.overshooting_kl_beta != 0:
             overshooting_vars = []  # Collect variables for overshooting to process in batch
@@ -375,8 +362,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 t_, d_ = t - 1, d - 1
                 # Calculate sequence padding so overshooting terms can be calculated in one batch
                 seq_pad = (0, 0, 0, 0, 0, t - d + args.overshooting_distance)
-                # FIXME: (old) Store (0) actions, (1) nonterminals, (2) rewards, (3) beliefs, (4) prior states, (5) posterior means, (6) posterior standard deviations and (7) sequence masks
-                #  (new) Store (0) actions, (1) nonterminals, (2) rewards, (3) beliefs, (4) prior states, (5) posterior logits, (6) sequence masks
+                # Store (0) actions, (1) nonterminals, (2) rewards, (3) beliefs, (4) prior states, (5) posterior logits, (6) sequence masks
                 overshooting_vars.append((F.pad(actions[t:d], seq_pad), F.pad(nonterminals[t:d], seq_pad), F.pad(rewards[t:d], seq_pad[2:]), beliefs[t_], prior_states[t_], F.pad(posterior_logits[t_ + 1:d_ + 1].detach(), seq_pad), F.pad(torch.ones(d - t, args.batch_size, args.state_size, device=args.device), seq_pad)))
                 # Posterior standard deviations must be padded with > 0 to prevent infinite KL divergences
 
@@ -408,10 +394,12 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         with torch.no_grad():
             actor_states = posterior_states.detach()
             actor_beliefs = beliefs.detach()
+            actor_logits = posterior_logits.detach()
+
         with FreezeParameters(model_modules):
             imagination_traj = imagine_ahead(
-                actor_states, actor_beliefs, actor_model, transition_model, args.planning_horizon)
-        imged_beliefs, imged_prior_states, imged_actions = imagination_traj
+                actor_states, actor_beliefs, actor_logits, actor_model, transition_model, args.planning_horizon)
+        imged_beliefs, imged_prior_states, imged_actions, imged_prior_logits = imagination_traj
         # ERASEME: 価値関数(value_moodel)は変わらず正規分布のままなので、そのまま使える
         with FreezeParameters(model_modules + value_model.modules):
             imged_reward = reward_model(
@@ -421,7 +409,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         returns = lambda_return(imged_reward, value_pred,
                                 bootstrap=value_pred[-1], discount=args.discount, lambda_=args.disclam)
         actor_loss = -torch.mean(returns)
-        # TODO: Implement Reinforce grad here
         reinforce_loss = actor_model.get_log_prob(
             {"a_t": imged_actions, "h_t": imged_beliefs, "s_t": imged_prior_states}, sum_features=False)[:-1]
         reinforce_loss *= returns.detach()[:-1] - value_pred[:-1]
@@ -430,8 +417,12 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         ratio = imag_grad_mix_sched(s)
         actor_loss += ratio * actor_loss + (1 - ratio) * reinforce_loss
 
-        #  TODO: policy entropyの項をactor_lossに追加(models.py 257行目に相当)
-        #TODO: actorの実装
+        # calculate actor entropy
+        actor_entropy = actor_model.get_entropy({"h_t": imged_beliefs, "s_t": imged_prior_states}, sum_features=False)[:-1]
+        actor_loss += torch.mean(actor_entropy) * actor_entropy_sched(s)
+
+        # calculate transition_model's entropy
+        actor_loss += torch.mean(Categorical(logits=imged_prior_logits).entropy()) * actor_state_entropy_sched(s)
         # TODO: data collectionのときに行動にノイズ入れる処理を消す
 
         # Update model parameters

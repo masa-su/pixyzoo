@@ -44,7 +44,7 @@ def write_video(frames, title, path=''):
   writer.release()
 
 
-def imagine_ahead(prev_state, prev_belief, policy: CategoricalActorModel, transition_model: TransitionModel, planning_horizon=12):
+def imagine_ahead(prev_state, prev_belief, prev_logits, policy: CategoricalActorModel, transition_model: TransitionModel, planning_horizon=12):
   '''
   imagine_ahead is the function to draw the imaginary tracjectory using the dynamics model, actor, critic.
   Input: current state (posterior), current belief (hidden), policy, transition_model  # torch.Size([50, 30]) torch.Size([50, 200])
@@ -55,11 +55,12 @@ def imagine_ahead(prev_state, prev_belief, policy: CategoricalActorModel, transi
   flatten = lambda x: x.view([-1]+list(x.size()[2:]))
   prev_belief = flatten(prev_belief)
   prev_state = flatten(prev_state)
+  prev_logits = flatten(prev_logits)
 
   # Create lists for hidden states (cannot use single tensor as buffer because autograd won't work with inplace writes)
   T = planning_horizon
-  beliefs, prior_states, prior_means, prior_std_devs, actions = [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T
-  beliefs[0], prior_states[0] = prev_belief, prev_state
+  beliefs, prior_states, actions, prior_logits = [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T, [torch.empty(0)] * T
+  beliefs[0], prior_states[0], prior_logits[0] = prev_belief, prev_state, prev_logits
 
   # Loop over time sequence
   for t in range(T - 1):
@@ -73,10 +74,11 @@ def imagine_ahead(prev_state, prev_belief, policy: CategoricalActorModel, transi
     # Compute state prior by applying transition dynamics
     prior_states[t + 1] = transition_model.stochastic_state_model.sample(
         {'h_t': beliefs[t + 1]}, reparam=True)['s_t']
+    prior_logits[t + 1] = transition_model.stochastic_state_model(h_t=beliefs[t + 1])['probs']
 
   # Return new hidden states
   # imagined_traj = [beliefs, prior_states, prior_means, prior_std_devs, actions]
-  imagined_traj = [torch.stack(beliefs[1:], dim=0), torch.stack(prior_states[1:], dim=0), torch.stack(actions[1:], dim=0)]
+  imagined_traj = [torch.stack(beliefs[1:], dim=0), torch.stack(prior_states[1:], dim=0), torch.stack(actions[1:], dim=0), torch.stack(prior_logits[1:], dim=0)]
   return imagined_traj
 
 def lambda_return(imged_reward, value_pred, bootstrap, discount=0.99, lambda_=0.95):
