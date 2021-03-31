@@ -194,7 +194,8 @@ transition_model = TransitionModel(belief_size=args.belief_size,
                                    disable_gru_norm=args.disable_gru_norm,
                                    kl_free=args.kl_free,
                                    kl_scale=args.kl_scale,
-                                   kl_balance=args.kl_balance
+                                   kl_balance=args.kl_balance,
+                                   device=args.device
                                    ).to(device=args.device)
 observation_model = ObservationModel(args.symbolic_env, env.observation_size, args.belief_size,
                                      args.state_size, args.embedding_size, args.cnn_activation_function).to(device=args.device)
