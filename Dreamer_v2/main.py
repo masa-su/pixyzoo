@@ -18,6 +18,9 @@ from tensorboardX import SummaryWriter
 
 from schedulers import init_scheduler
 
+"""
+python main.py --experience-size 1000 --env PongDeterministic-v0　などでatari上での学習を行うことができます
+"""
 
 # Hyperparameters
 parser = argparse.ArgumentParser(description='PlaNet or Dreamer')
@@ -184,7 +187,6 @@ elif not args.test:
 
 
 # Initialise model parameters randomly
-#FIXME: env.action_sizeは使えない
 transition_model = TransitionModel(belief_size=args.belief_size,
                                    state_size=args.state_size,
                                    num_action=env.num_action,
@@ -245,9 +247,8 @@ if args.algo == "dreamer":
     print("DREAMER")
     planner = actor_model
 else:
-    #TODO: fix env.action_size(離散行動空間では使えない)
     planner = MPCPlanner(env.num_action, args.planning_horizon, args.optimisation_iters,
-                         args.candidates, args.top_candidates, transition_model, reward_model)  # TODO: num_actionに変えたが大丈夫か確認
+                         args.candidates, args.top_candidates, transition_model, reward_model)
 global_prior = Normal(torch.zeros(args.batch_size, args.state_size, device=args.device), torch.ones(
     args.batch_size, args.state_size, device=args.device))  # Global prior N(0, I)
 # Allowed deviation in KL divergence
@@ -285,7 +286,6 @@ if args.test:
         total_reward = 0
         for _ in tqdm(range(args.test_episodes)):
             observation = env.reset()
-            #FIXME: 離散行動空間ではenv.action_sizeは使えない
             belief, posterior_state, action = torch.zeros(1, args.belief_size, device=args.device), torch.zeros(
                 1, args.state_size, device=args.device), torch.zeros(1, env.num_action, device=args.device)
             pbar = tqdm(range(args.max_episode_length // args.action_repeat))
@@ -347,7 +347,7 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         # transition loss
         kl_loss, value = transition_model.calc_kld(current_step=s,
                                             posterior_logits=posterior_logits,
-                                            prior_logits=prior_logits) #TODO: valueの使いみちを著者実装で確認
+                                            prior_logits=prior_logits) #TODO: ここで計算したvalueの使いみちを著者実装で確認
 
         # Calculate latent overshooting objective for t > 0 (This corresponds to behavior learning)
         if args.overshooting_kl_beta != 0:
@@ -397,7 +397,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
             imagination_traj = imagine_ahead(
                 actor_states, actor_beliefs, actor_logits, actor_model, transition_model, args.planning_horizon)
         imged_beliefs, imged_prior_states, imged_actions, imged_prior_logits = imagination_traj
-        # ERASEME: 価値関数(value_moodel)は変わらず正規分布のままなので、そのまま使える
         with FreezeParameters(model_modules + value_model.modules):
             imged_reward = reward_model(
                 h_t=imged_beliefs, s_t=imged_prior_states)['loc']
@@ -509,7 +508,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
         with torch.no_grad():
             observation, total_rewards, video_frames = test_envs.reset(
             ), np.zeros((args.test_episodes, )), []
-            #FIXME: 離散行動空間では使えない
             belief, posterior_state, action = torch.zeros(args.test_episodes, args.belief_size, device=args.device), torch.zeros(
                 args.test_episodes, args.state_size, device=args.device), torch.zeros(args.test_episodes, env.action_size, device=args.device)
             pbar = tqdm(range(args.max_episode_length // args.action_repeat))

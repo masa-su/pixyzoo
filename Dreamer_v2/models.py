@@ -29,6 +29,7 @@ class ModifiedCategorical(torch.distributions.OneHotCategorical):
     def __init__(self, probs=None, logits=None):
         """OneHotCategorical dist with raparameterization method
             called Straight-Through Grads with Auto-Diff"""
+        #TODO: gumbel softmaxを使って実装されている確率分布をこの確率分布を使って実装し直す
         self.dist = super().__init__(logits=logits, probs=probs)
 
     def mode(self) -> torch.Tensor:
@@ -156,6 +157,7 @@ class TransitionModel(nn.Module):
 
 class DenseDecoder(Normal):
     def __init__(self, observation_size: torch.Tensor, belief_size: torch.Tensor, state_size: int, embedding_size: int, activation_function: str = 'relu'):
+        """潜在変数から観測(一次元)を推定するモデル"""
         super().__init__(var=['o_t'], cond_var=['h_t', 's_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, embedding_size)
@@ -202,7 +204,7 @@ class StochasticStateModel(distributions.Categorical):
     """p(s_t | h_t)"""
 
     def __init__(self, h_size: int, hidden_size: int, s_size: int, min_std_dev: float, activation: callable = nn.ELU):
-
+        """時間ステップtにおけるdeterministicな潜在変数(h_t)から、時間ステップtの確率的な潜在変数(s_t)を求めるモデル"""
         super().__init__(var=['s_t'], cond_var=[
             'h_t'], name="StochasticStateModel")
         self.fcs = nn.Sequential(
@@ -224,6 +226,7 @@ class ConvDecoder(Normal):
     __constants__ = ['embedding_size']
 
     def __init__(self, belief_size: int, state_size: int, embedding_size: int, activation_function: str = 'relu'):
+        """潜在変数から観測(画像)を推定するモデル"""
         super().__init__(var=['o_t'], cond_var=['h_t', 's_t'])
         self.act_fn = getattr(F, activation_function)
         self.embedding_size = embedding_size
@@ -265,6 +268,7 @@ def ObservationModel(symbolic, observation_size, belief_size, state_size, embedd
 
 class RewardModel(Normal):
     def __init__(self, h_size: int, s_size: int, hidden_size: int, activation='relu'):
+        """潜在変数から報酬を推定するモデル"""
         # p(o_t | h_t, s_t)
         super().__init__(cond_var=['h_t', 's_t'], var=['r_t'])
         self.act_fn = getattr(F, activation)
@@ -293,6 +297,7 @@ class RewardModel(Normal):
 
 class ValueModel(Normal):
     def __init__(self, belief_size: int, state_size: int, hidden_size: int, activation_function: str = 'relu'):
+        """Critic"""
         super().__init__(cond_var=['h_t', 's_t'], var=['r_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, hidden_size)
@@ -323,6 +328,7 @@ class ValueModel(Normal):
 class Pie(Normal):
     def __init__(self, belief_size: int, state_size: int, hidden_size: int, num_action: int, dist: str = 'tanh_normal',
                  activation_function: str = 'elu', min_std: float = 1e-4, init_std: float = 5, mean_scale: float = 5):
+        """連続行動を出力するアクター(Dreamer_v2では使われていない)"""
         super().__init__(cond_var=['h_t', 's_t'], var=['a_t'])
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(belief_size + state_size, hidden_size)
@@ -354,7 +360,8 @@ class Pie(Normal):
         return {'loc': action_mean, 'scale': action_std}
 
 class CategoricalActorModel(distributions.Categorical):
-    def __init__(self, num_actions: int, h_size: int, s_size: int, num_layers: int, num_units: int, activation: Any = nn.ELU, ):
+    def __init__(self, num_actions: int, h_size: int, s_size: int, num_layers: int, num_units: int, activation: Any = nn.ELU):
+        """離散行動を出力するアクター"""
         super().__init__(cond_var=['h_t', 's_t'], var=['a_t'])
         assert num_layers >= 2, f'This model requires at least 2 layers, but {num_layers} are given'
         layers = [nn.Linear(in_features=h_size + s_size,
@@ -373,6 +380,10 @@ class CategoricalActorModel(distributions.Categorical):
         return {'probs': out}
 
     def get_action(self, h_t: torch.Tensor, s_t: torch.Tensor, det: bool = False) -> torch.Tensor:
+        """行動を出力する関数
+        det == Trueのときは最も確率の高い行動を、
+        それ以外のときは、カテゴリカル分布からサンプリングした行動を返す
+        """
         if det:
             probs = self.forward(h_t=h_t, s_t=s_t)["probs"]
             action = np.argmax(probs, axis=-1)
@@ -383,6 +394,7 @@ class CategoricalActorModel(distributions.Categorical):
 
 class SymbolicEncoder(jit.ScriptModule):
     def __init__(self, observation_size: int, embedding_size: int, activation_function: str = 'relu'):
+        """観測（１次元）をエンコードするCNN"""
         super().__init__()
         self.act_fn = getattr(F, activation_function)
         self.fc1 = nn.Linear(observation_size, embedding_size)
@@ -402,6 +414,7 @@ class VisualEncoder(jit.ScriptModule):
     __constants__ = ['embedding_size']
 
     def __init__(self, embedding_size: int, activation_function: str = 'relu'):
+        """観測（画像）をエンコードするCNN"""
         super().__init__()
         self.act_fn = getattr(F, activation_function)
         self.embedding_size = embedding_size
@@ -426,14 +439,16 @@ class VisualEncoder(jit.ScriptModule):
 
 
 def Encoder(symbolic: bool, observation_size: int, embedding_size: int, activation_function: str = 'relu') -> Union[SymbolicEncoder, VisualEncoder]:
+    """観測の種類に合ったエンコーダのインスタンスを返す関数"""
     if symbolic:
-        return SymbolicEncoder(observation_size, embedding_size, activation_function)
+        return SymbolicEncoder(observation_size, embedding_size, activation_function) #　1次元の観測をエンコードするクラス
     else:
-        return VisualEncoder(embedding_size, activation_function)
+        return VisualEncoder(embedding_size, activation_function) # 画像の観測をエンコードするクラス
 
 
 class NormGRUCell(nn.Module):
     def __init__(self, belief_size, norm=False, act=torch.tanh, update_bias=-1, **kwargs):
+        """Layer NormalizationをかけたGRU"""
         super().__init__()
         self._size = belief_size
         self._act = act
