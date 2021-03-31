@@ -1,6 +1,5 @@
 from warnings import WarningMessage
-import torch
-from typing import Union, final
+from typing import Union
 from abc import ABC
 import re
 

@@ -1,7 +1,6 @@
 import argparse
 import os
 import numpy as np
-from numpy.core.fromnumeric import compress
 import torch
 from torch import nn, optim
 from torch.distributions import Normal
@@ -120,21 +119,19 @@ parser.add_argument('--experience-replay', type=str, default='',
                     metavar='ER', help='Load experience replay')
 parser.add_argument('--render', action='store_true', help='Render environment')
 parser.add_argument('--kl-free', type=str, default='0.0',
-                    help='')  # TODO: write descent help here
+                    help='minimum kl loss')
 parser.add_argument('--kl-balance', type=str, default='0.0', help='')
 parser.add_argument('--kl-scale', type=str, default='0.0', help='')
 parser.add_argument('--imag-gradient-mix', type=str, default='linear(0.1,0,2.5e6)',
                     help="ratio between reinforce grad and dynamics backprop grad")
 parser.add_argument('--actor-entropy', type=str, default='linear(3e-3,3e-4,2.5e6)',
-                    help='')
+                    help='coefficient of actor entropy')
 parser.add_argument('--actor-state-entropy', type=str, default='0',
-                    help='')
+                    help='coefficient of entropy of the latent state model')
 parser.add_argument('--num-actor-layers', type=int, default=4,
                     help="number of the fc layers of e actor")
 parser.add_argument('--num-actor-units', type=int, default=400,
                     help='number of hidden units in the each layer of the actor')
-# TODO: add above discription
-
 args = parser.parse_args()
 # Overshooting distance cannot be greater than chunk size
 args.overshooting_distance = min(args.chunk_size, args.overshooting_distance)
@@ -423,7 +420,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
 
         # calculate transition_model's entropy
         actor_loss += torch.mean(Categorical(logits=imged_prior_logits).entropy()) * actor_state_entropy_sched(s)
-        # TODO: data collectionのときに行動にノイズ入れる処理を消す
 
         # Update model parameters
         actor_optimizer.zero_grad()
@@ -473,7 +469,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
     # Data collection
     print("Data collection")
     with torch.no_grad():
-        #FIXME: 離散行動空間ではenv.action_sizeは使えない
         observation, total_reward = env.reset(), 0
         belief, posterior_state, action = torch.zeros(1, args.belief_size, device=args.device), torch.zeros(
             1, args.state_size, device=args.device), torch.zeros(1, env.num_action, device=args.device)
@@ -522,11 +517,6 @@ for episode in tqdm(range(metrics['episodes'][-1] + 1, args.episodes + 1), total
                 belief, posterior_state, action, next_observation, reward, done = update_belief_and_act(
                     args, test_envs, planner, transition_model, encoder, belief, posterior_state, action, observation.to(device=args.device))
                 total_rewards += reward.numpy()
-                """
-                if not args.symbolic_env:  # Collect real vs. predicted frames for video
-                    video_frames.append(make_grid(torch.cat([observation, observation_model(
-                        belief, posterior_state)['loc'].cpu()], dim=3) + 0.5, nrow=5).numpy())  # Decentre
-                """
                 observation = next_observation
                 if done.sum().item() == args.test_episodes:
                     pbar.close()

@@ -3,11 +3,9 @@ from pixyz import distributions
 from pixyz.distributions.exponential_distributions import Categorical
 import torch
 from torch import jit, nn, var
-from torch.distributions.one_hot_categorical import OneHotCategorical
 from torch.nn import functional as F
 import torch.distributions
 from torch.distributions.kl import kl_divergence
-from torch.nn import RNNCellBase
 import numpy as np
 from pixyz.distributions import Normal
 
@@ -51,7 +49,6 @@ class TransitionModel(nn.Module):
 
     def __init__(self, belief_size: int, state_size: int, num_action: int, hidden_size: int, embedding_size: int, kl_free: str, kl_scale: str, kl_balance: str, activation_function: str = 'relu', min_std_dev: float = 0.1, disable_gru_norm: bool = False):
         super().__init__()
-        #TODO: 離散行動空間への対応(action_sizeはもう使えない)
         self.act_fn = getattr(F, activation_function)
         self.min_std_dev = min_std_dev
         self.fc_embed_state_action = nn.Linear(
@@ -354,46 +351,6 @@ class Pie(Normal):
             torch.tanh(action_mean / self._mean_scale)
         action_std = F.softplus(action_std_dev + raw_init_std) + self._min_std
         return {'loc': action_mean, 'scale': action_std}
-
-
-"""
-class ActorModel(nn.Module):
-    def __init__(self, belief_size: int, state_size: int, hidden_size: int, num_action: int, dist: str = 'tanh_normal',
-                 activation_function: str =      'elu', min_std: float =      1e-4, init_std: float =      5, mean_scale: float =      5):
-        super().__init__()
-        #TODO: rewrite this by Categorical dist
-        self.pie = Pie(belief_size, state_size, hidden_size, num_action, dist=dist,
-                       activation_function=activation_function, min_std=min_std, init_std=init_std, mean_scale=mean_scale)
-
-    def get_action(self, belief: torch.Tensor, state: torch.Tensor, det: bool =      False) -> torch.Tensor:
-        if det:
-            # get mode
-            actions = self.pie.sample({'h_t': belief, 's_t': state}, sample_shape=[
-                                      100], reparam=True)['a_t']  # (100, 2450, 6)
-            actions = torch.tanh(actions)
-            batch_size = actions.size(1)
-            feature_size = actions.size(2)
-            logprob = self.pie.get_log_prob(
-                {'h_t': belief, 's_t': state, 'a_t': actions}, sum_features=False)  # (100, 2450, 6)
-            logprob -= torch.log(1 - actions.pow(2) + 1e-6)
-            logprob = logprob.sum(dim=-1)
-            indices = torch.argmax(logprob, dim=0).reshape(
-                1, batch_size, 1).expand(1, batch_size, feature_size)
-            return torch.gather(actions, 0, indices).squeeze(0)
-
-        else:
-            return torch.tanh(self.pie.sample({'h_t': belief, 's_t': state}, reparam=True)['a_t'])
-
-    def get_log_prob(self, action: torch.Tensor, h_t: torch.Tensor, s_t: torch.Tensor) -> torch.Tensor:
-        # Calculate log probability of the given action
-        #TODO: check this impl
-        gaussian_logprob = self.pie.get_log_prob(
-            {'a_t': torch.atanh(action), "h_t": h_t, "s_t": s_t}, sum_features=False)
-        logprob = gaussian_logprob - torch.log(1 - action.pow(2) + 1e-6)
-        logprob = logprob.sum(dim=-1)
-        return logprob
-"""
-
 
 class CategoricalActorModel(distributions.Categorical):
     def __init__(self, num_actions: int, h_size: int, s_size: int, num_layers: int, num_units: int, activation: Any = nn.ELU, ):
