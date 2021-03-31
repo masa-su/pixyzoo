@@ -48,7 +48,7 @@ class ModifiedCategorical(torch.distributions.OneHotCategorical):
 class TransitionModel(nn.Module):
     __constants__ = ['min_std_dev']
 
-    def __init__(self, belief_size: int, state_size: int, num_action: int, hidden_size: int, embedding_size: int, kl_free: str, kl_scale: str, kl_balance: str, activation_function: str = 'relu', min_std_dev: float = 0.1, disable_gru_norm: bool = False):
+    def __init__(self, belief_size: int, state_size: int, num_action: int, hidden_size: int, embedding_size: int, kl_free: str, kl_scale: str, kl_balance: str, activation_function: str = 'relu', min_std_dev: float = 0.1, disable_gru_norm: bool = False, device: str = "cpu"):
         super().__init__()
         self.act_fn = getattr(F, activation_function)
         self.min_std_dev = min_std_dev
@@ -67,7 +67,8 @@ class TransitionModel(nn.Module):
         self.kl_balance_sched = init_scheduler(config=kl_balance)
         self.kl_free_sched = init_scheduler(config=kl_free)
         self.kl_scale_sched = init_scheduler(config=kl_scale)
-
+        
+        self.device = device
         self.modules = [self.fc_embed_state_action,
                         self.stochastic_state_model, self.obs_encoder, self.rnn]
         # Operates over (previous) state, (previous) actions, (previous) belief, (previous) nonterminals (mask), and (current) observations
@@ -145,10 +146,10 @@ class TransitionModel(nn.Module):
         else:
             value_lhs = value = kl_divergence(
                 dist(posterior_logits), dist(prior_logits.detach()))
-            loss_lhs = torch.max(value_lhs.mean(), torch.tensor(kl_free))
+            loss_lhs = torch.max(value_lhs.mean(), torch.tensor(kl_free, device=self.device))
             value_rhs = kl_divergence(
                 dist(posterior_logits.detach()), dist(prior_logits))
-            loss_lhs = torch.max(value_rhs.mean(), torch.tensor(kl_free))
+            loss_lhs = torch.max(value_rhs.mean(), torch.tensor(kl_free, device=self.device))
             loss = (1 - kl_balance) * loss_lhs + kl_balance * kl_balance
 
         loss *= kl_scale
