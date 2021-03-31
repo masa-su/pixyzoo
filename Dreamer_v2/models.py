@@ -228,10 +228,11 @@ class ConvDecoder(Normal):
         self.act_fn = getattr(F, activation_function)
         self.embedding_size = embedding_size
         self.fc1 = nn.Linear(belief_size + state_size, embedding_size)
-        self.conv1 = nn.ConvTranspose2d(embedding_size, 128, 5, stride=2)
-        self.conv2 = nn.ConvTranspose2d(128, 64, 5, stride=2)
-        self.conv3 = nn.ConvTranspose2d(64, 32, 6, stride=2)
-        self.conv4 = nn.ConvTranspose2d(32, 3, 6, stride=2)
+        self.conv1 = nn.ConvTranspose2d(embedding_size, 192, 5, stride=2)
+        self.conv2 = nn.ConvTranspose2d(192, 96, 5, stride=2)
+        self.conv3 = nn.ConvTranspose2d(96, 48, 6, stride=2)
+        self.conv4 = nn.ConvTranspose2d(48, 3, 6, stride=2)
+
         self.modules = [self.fc1, self.conv1,
                         self.conv2, self.conv3, self.conv4]
 
@@ -404,11 +405,11 @@ class VisualEncoder(jit.ScriptModule):
         super().__init__()
         self.act_fn = getattr(F, activation_function)
         self.embedding_size = embedding_size
-        self.conv1 = nn.Conv2d(3, 32, 4, stride=2)
-        self.conv2 = nn.Conv2d(32, 64, 4, stride=2)
-        self.conv3 = nn.Conv2d(64, 128, 4, stride=2)
-        self.conv4 = nn.Conv2d(128, 256, 4, stride=2)
-        self.fc = nn.Identity() if embedding_size == 1024 else nn.Linear(1024, embedding_size)
+        self.conv1 = nn.Conv2d(3, 48, 4, stride=2)
+        self.conv2 = nn.Conv2d(48, 96, 4, stride=2)
+        self.conv3 = nn.Conv2d(96, 192, 4, stride=2)
+        self.conv4 = nn.Conv2d(192, 384, 4, stride=2)
+        self.fc = nn.Identity() if embedding_size == 1536 else nn.Linear(1536, embedding_size)
         self.modules = [self.conv1, self.conv2,
                         self.conv3, self.conv4, self.fc]
 
@@ -418,8 +419,8 @@ class VisualEncoder(jit.ScriptModule):
         hidden = self.act_fn(self.conv2(hidden))
         hidden = self.act_fn(self.conv3(hidden))
         hidden = self.act_fn(self.conv4(hidden))
-        hidden = hidden.view(-1, 1024)
-        # Identity if embedding size is 1024 else linear projection
+        hidden = hidden.view(-1, 1536)
+        # Identity if embedding size is 1536 else linear projection
         hidden = self.fc(hidden)
         return hidden
 

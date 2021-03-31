@@ -41,13 +41,13 @@ parser.add_argument('--cnn-activation-function', type=str, default='relu',
 parser.add_argument('--dense-activation-function', type=str, default='elu',
                     choices=dir(F), help='Model activation function a dense layer')
 # Note that the default encoder for visual observations outputs a 1024D vector; for other embedding sizes an additional fully-connected layer is used
-parser.add_argument('--embedding-size', type=int, default=1024,
+parser.add_argument('--embedding-size', type=int, default=1536,
                     metavar='E', help='Observation embedding size')
-parser.add_argument('--hidden-size', type=int, default=200,
+parser.add_argument('--hidden-size', type=int, default=600,
                     metavar='H', help='Hidden size')
-parser.add_argument('--belief-size', type=int, default=200,
+parser.add_argument('--belief-size', type=int, default=600,
                     metavar='H', help='Belief/hidden size')
-parser.add_argument('--state-size', type=int, default=30,
+parser.add_argument('--state-size', type=int, default=32,
                     metavar='Z', help='State/latent size')
 parser.add_argument('--action-repeat', type=int, default=2,
                     metavar='R', help='Action repeat')
@@ -78,11 +78,11 @@ parser.add_argument('--free-nats', type=float, default=3,
 parser.add_argument('--bit-depth', type=int, default=5,
                     metavar='B', help='Image bit depth (quantisation)')
 parser.add_argument('--model_learning-rate', type=float,
-                    default=1e-3, metavar='α', help='Learning rate')
+                    default=2e-4, metavar='α', help='Learning rate')
 parser.add_argument('--actor_learning-rate', type=float,
-                    default=8e-5, metavar='α', help='Learning rate')
+                    default=4e-5, metavar='α', help='Learning rate')
 parser.add_argument('--value_learning-rate', type=float,
-                    default=8e-5, metavar='α', help='Learning rate')
+                    default=1e-4, metavar='α', help='Learning rate')
 parser.add_argument('--learning-rate-schedule', type=int, default=0, metavar='αS',
                     help='Linear learning rate schedule (optimisation steps from 0 to final learning rate; 0 to disable)')
 parser.add_argument('--adam-epsilon', type=float, default=1e-7,
