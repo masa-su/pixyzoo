@@ -19,6 +19,7 @@ This repository contains various deep generative models implemented in [Pixyz](h
 - [ ] VGAN
 - [x] DynaNet  
 - [x] HRSSM
+- [x] Dreamer
 
 
 # How To Contribute
