@@ -1,0 +1,36 @@
+# mujoco license key
+*/mjkey.txt
+
+# cache
+*.ipynb_checkpoints
+*.pyc
+
+# train/test data to learn RSSM
+dataset/dataset
+*.pkl
+*.joblib
+*.wav
+*.npy
+
+# train results and logs
+dataset
+results
+wandb
+outputs
+.hydra
+mlruns
+multirun
+trained_model
+tmp
+plot
+
+# visualize results
+*.gif
+*.mp4
+*.png
+
+# test code
+test_codes
+
+.vscode
+_old_codes

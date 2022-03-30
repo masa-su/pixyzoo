@@ -1,0 +1,89 @@
+main:
+  experiment_name: excute_test
+  log_dir:
+  algo: rssm
+  seed: 0
+  disable_cuda: False
+  device: cuda:0
+  test: False
+  test_interval: 25
+  test_episodes: 10
+  checkpoint_interval: 1_000
+  checkpoint_experience: False
+  models: ""
+  wandb : True
+  render: False
+
+
+env:
+  env_name: cobotta
+  # Note that the default encoder for visual observations outputs a 1024D vector; for other embedding sizes an additional fully-connected layer is used
+  dataset_type: cobotta
+  info_names: []
+  symbolic_env: False
+  observation_shapes: 
+    image: [3, 64, 64]
+    sound: [128, 20]
+  action_name: "dummy"
+  action_size: 1
+  action_repeat: 1
+  episodes: 1000
+  bit_depth: 5
+  max_episode_length: 1000
+
+train:
+  experience_replay: dataset/train/pack
+  n_episode_per_data: 
+  n_episode: 
+
+  # Original implementation has an unlimited buffer size, but 1 million is the max experience collected anyway
+  experience_size: 250_000
+  n_augment: 4
+  action_noise: 0.3
+  train_iteration: 20_000
+  seed_episodes: 5
+  collection_interval: 100
+  batch_size: 50
+  chunk_size: 50
+
+  rssm:
+    load: False
+    model_path: 
+    fix: False
+
+model:
+  observation_names: ["image", "sound"]
+  reconstruction_names: ["image", "sound"]
+  predict_reward: False
+  
+  cnn_activation_function: relu
+  dense_activation_function: elu
+  embedding_size: 1024
+  visual_embedding_size: 1024
+  sound_embedding_size: 250
+  symbolic_embedding_size: 512
+  hidden_size: 200
+  belief_size: 200
+  state_size: 30
+  worldmodel_LogProbLoss: False
+  overshooting_distance: 50
+  overshooting_kl_beta: 0
+  overshooting_reward_scale: 0
+  global_kl_beta: 0
+  free_nats: 3
+
+  model_learning_rate: 1e-3
+  actor_learning_rate: 8e-5
+  value_learning_rate: 8e-5
+  learning_rate_schedule: 0
+  adam_epsilon: 1e-7
+  # Note that original has a linear learning rate decay, but it seems unlikely that this makes a significant difference
+  grad_clip_norm: 100.0
+  planning_horizon: 15
+  discount: 0.99
+  disclam: 0.95
+
+planner:
+  optimisation_iters: 10
+  candidates: 1_000
+  top_candidates: 100
