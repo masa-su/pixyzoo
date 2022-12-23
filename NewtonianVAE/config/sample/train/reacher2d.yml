@@ -1,0 +1,9 @@
+batch_size: 100
+max_episode: 1000
+max_sequence: 100
+epoch_max: 300 
+check_epoch: 20
+init_params: false
+device: cuda
+train_path: "datasets/sample/reacher2d/train.npz"
+test_path: "datasets/sample/reacher2d/test.npz"
