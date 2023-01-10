@@ -1,0 +1,43 @@
+device: &device cuda:0
+
+environment:                                                                                                   
+  domain_name: point_mass_nvae                                                  
+  task_name: easy
+  max_episode_length: 100
+  bit_depth: 8
+
+weight:
+  path: results/2022_12_18_22_11_30/weights
+  filename: 300.weight
+
+model:
+  delta_time: &delta_time 0.5
+  clip_grad_norm: False
+  clip_grad_value: False
+  device: *device
+  use_amp: True
+
+  encoder_param:
+    input_dim: 3
+    output_dim: 2
+    act_func_name: ReLU
+
+  decoder_param:
+    input_dim: 2
+    output_dim: 3
+    act_func_name: LeakyReLU
+    device: *device
+
+  transition_param:
+    delta_time: *delta_time
+
+  velocity_param:
+    act_func_name: ReLU
+    delta_time: *delta_time
+    batch_size: 1
+    device: *device
+    use_data_efficiency: True
+
+  optimizer: Adam
+  optimizer_params:
+    lr: 0.0003

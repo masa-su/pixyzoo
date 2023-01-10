@@ -1,0 +1,52 @@
+save_path: &save_path datasets/sample/point_mass_line
+device: &device cpu
+
+
+environment:
+  domain_name: ycb_mass
+  task_name: easy
+  max_episode_length: 1000
+  bit_depth: 8
+
+
+dataset:
+  train:
+    episode_size: &train_episode_size 1000
+    sequence_size: &train_sequence_size 100
+    save_path: *save_path
+    save_filename: train.npz
+  
+    memory:
+      episode_size: *train_episode_size
+      sequence_size: *train_sequence_size
+      action_size: 2
+      bit_depth: 8
+      device: *device
+  
+  
+  validation:
+    episode_size: &validation_episode_size 100
+    sequence_size: &validation_sequence_size 100
+    save_path: *save_path
+    save_filename: validation.npz
+  
+    memory:
+      episode_size: *validation_episode_size
+      sequence_size: *validation_sequence_size
+      action_size: 2
+      bit_depth: 8
+      device: *device
+  
+  
+  test:
+    episode_size: &test_episode_size 100
+    sequence_size: &test_sequence_size 100
+    save_path: *save_path
+    save_filename: test.npz
+  
+    memory:
+      episode_size: *test_episode_size
+      sequence_size: *test_sequence_size
+      action_size: 2
+      bit_depth: 8
+      device: *device
